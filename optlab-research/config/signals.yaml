@@ -1,0 +1,223 @@
+# config/signals.yaml
+#
+# THE signal registry. Every factor the workbench can compute is described here.
+# Adding a new signal requires only a new entry in this file — no Python changes
+# unless the signal is complex enough to need a library function.
+#
+# ─── Field reference ────────────────────────────────────────────────────────────
+#
+#  name             : canonical signal identifier (snake_case, unique)
+#  description      : one-line description shown in the workbench UI
+#  kind             : one of:
+#                       funda       — Polars expression over Compustat columns
+#                                     already attached to the universe DataFrame
+#                       crsp_price  — Polars expression over CRSP price columns
+#                                     already attached to the universe DataFrame
+#                       library     — Python callable; complex multi-step logic
+#  formula          : (funda / crsp_price only) Python expression evaluated as
+#                       eval(formula, {"pl": polars})
+#                     Must return a pl.Expr. Column names must exist in the universe.
+#  library_fn       : (library only) fully-qualified dotted path to a callable.
+#                     Signature: (con, date, spec, universe) -> pl.DataFrame[permno, signal_value]
+#  required_columns : columns that must be present in the universe DataFrame.
+#                     Missing columns raise ValueError before computation starts.
+#  source_table     : which WRDS table drives this signal (documentation only)
+#  pit_lag_days     : extra PIT buffer beyond the rdq / datadate gate (default 0)
+#  notes            : implementation notes, gotchas, literature references
+#
+# ─── Library-signal parameters ──────────────────────────────────────────────────
+#  lookback_months  : (momentum, beta) number of formation months
+#  skip_months      : (momentum, reversal) months to skip before end of window
+#  lookback_days    : (idio_vol) number of trailing trading days
+#  min_obs          : minimum valid observations to compute signal
+#
+# ─── Sort convention ────────────────────────────────────────────────────────────
+#  DEFAULT: signal_quantile = 5 → highest signal value → long side of long-short
+#           signal_quantile = 1 → lowest signal value  → short side
+#
+#  INVERTED (noted per signal): signal_quantile = 1 → long side.
+#  Signals with inverted sort: size, accruals, asset_growth,
+#                              short_term_reversal, beta_60m.
+#  The backtest engine respects the `long_quantile` field set in the backtest
+#  config; these signals are simply documented here for reference.
+# ────────────────────────────────────────────────────────────────────────────────
+
+signals:
+
+  # ─── Value ──────────────────────────────────────────────────────────────────
+
+  - name: book_to_market
+    description: Book-to-market equity ratio (Fama-French value factor, 1992)
+    kind: funda
+    formula: "pl.col('ceq') / pl.col('mcap_musd')"
+    required_columns: [ceq, mcap_musd]
+    source_table: comp_funda
+    notes: >
+      ceq (book equity) and mcap_musd (market equity) are both in $M.
+      mcap_musd = abs(prc) * shrout / 1000 from the CRSP price attach.
+      At portfolio construction, filter to ceq > 0 to exclude negative-book firms;
+      they are economically different and distort the sort.
+      PIT gate: COALESCE(rdq, datadate + 90 days) <= asof, enforced by the compute
+      layer's fresh lateral join (not the 90-day universe default).
+
+  # ─── Quality / Profitability ────────────────────────────────────────────────
+
+  - name: gross_profitability
+    description: Gross profitability scaled by total assets (Novy-Marx 2013)
+    kind: funda
+    formula: "(pl.col('revt') - pl.col('cogs')) / pl.col('at')"
+    required_columns: [revt, cogs, at]
+    source_table: comp_funda
+    notes: >
+      GP = (Revenue - COGS) / Total Assets. Novy-Marx (2013) shows this has
+      roughly the same predictive power as B/M, with negative correlation to it —
+      combining the two improves the Sharpe of a value strategy significantly.
+      Filter to at > 0 at portfolio construction. COGS can be missing for
+      financial firms; consider restricting universe to non-financials (SIC != 6xxx).
+
+  - name: roe
+    description: Return on equity — net income / common book equity (quality factor)
+    kind: funda
+    formula: "pl.col('ni') / pl.col('ceq')"
+    required_columns: [ni, ceq]
+    source_table: comp_funda
+    notes: >
+      ROE = Net Income / Common Book Equity. Higher ROE = higher quality.
+      Sort: Q5 = highest ROE = long (standard direction).
+      Filter to ceq > 0 at portfolio construction. Can produce extreme values for
+      firms with small or near-zero ceq — winsorize at 1st/99th percentile before
+      ranking in production backtests.
+      Closely related to the QMJ (Quality Minus Junk) factor (Asness et al. 2019);
+      see also gross_profitability for an assets-scaled complement.
+
+  - name: accruals
+    description: >
+      Operating accruals = (net income - operating cash flow) / total assets
+      (Sloan 1996 cash-flow variant; Richardson et al. 2005).
+    kind: funda
+    formula: "(pl.col('ni') - pl.col('oancf')) / pl.col('at')"
+    required_columns: [ni, oancf, at]
+    source_table: comp_funda
+    notes: >
+      SORT DIRECTION INVERTED: Q1 (lowest accruals = most cash-based earnings)
+      is the long side. High accruals signal earnings manipulation or aggressive
+      accounting; Sloan (1996) documents that high-accrual firms have lower
+      future returns.
+      oancf (operating cash flow from the cash-flow statement) is only available
+      post-1987 in Compustat; coverage is sparse before that. Expect ~15-20%
+      null rate in universes including financials (SIC 6xxx), where oancf
+      reporting conventions differ.
+      The balance-sheet based Sloan accrual requires lagged AT/CA/CL; this
+      cash-flow version is preferred for CRSP/Compustat work and is the standard
+      in post-2005 literature.
+
+  # ─── Size ────────────────────────────────────────────────────────────────────
+
+  - name: size
+    description: >
+      Log market capitalization (Fama-French SMB). Low = small cap = long side of
+      size premium.
+    kind: crsp_price
+    formula: "pl.col('mcap_musd').log()"
+    required_columns: [mcap_musd]
+    source_table: crsp_msf
+    notes: >
+      Natural log of mcap in $M. The size premium buys small-cap stocks, so
+      quintile 1 (lowest log mcap) = smallest stocks = expected outperformers.
+      SORT DIRECTION INVERTED: Q1 = long side.
+
+  # ─── Momentum ────────────────────────────────────────────────────────────────
+
+  - name: momentum_12_2
+    description: >
+      12-month cumulative return skipping most recent month (Jegadeesh-Titman 1993).
+      Formation window: [t-13, t-2] months. Monthly compounded.
+    kind: library
+    library_fn: optlab_research.signals.library.momentum.compute
+    lookback_months: 12
+    skip_months: 1
+    source_table: crsp_msf
+    notes: >
+      Skipping the most recent month avoids short-term reversal contamination
+      (Jegadeesh 1990). Requires at least 10 of 12 valid monthly returns.
+      Known issue: momentum crashes badly in January (the January effect) and
+      after market corrections — always attribute against UMD before reporting alpha.
+
+  - name: short_term_reversal
+    description: >
+      Prior-month return — 1-month reversal (Jegadeesh 1990).
+      Formation window: [t-1, t-1] months.
+    kind: library
+    library_fn: optlab_research.signals.library.short_term_reversal.compute
+    skip_months: 1
+    source_table: crsp_msf
+    notes: >
+      SORT DIRECTION INVERTED: Q1 (lowest prior-month return = prior losers)
+      is the long side. Short-term reversal documents mean reversion at 1-month
+      horizon — stocks that fell last month tend to bounce.
+      This effect is largely microstructure-driven (bid-ask bounce, illiquidity).
+      After t-cost adjustment the paper profit is small; use as a control in
+      attribution rather than a standalone signal.
+      Complement to momentum_12_2: the two signals are negatively correlated
+      at the 1-month horizon, and combining them with appropriate timing can
+      reduce reversal drag on momentum strategies.
+
+  # ─── Risk ────────────────────────────────────────────────────────────────────
+
+  - name: idio_vol_252d
+    description: >
+      Idiosyncratic volatility: annualized std dev of FF3 regression residuals
+      over trailing 252 trading days (Ang, Hodrick, Xing, Zhang 2006).
+    kind: library
+    library_fn: optlab_research.signals.library.idio_vol.compute
+    lookback_days: 252
+    min_obs: 120
+    source_table: crsp_dsf
+    notes: >
+      AHXZ (2006) document the low-idiovol anomaly: stocks with high idiosyncratic
+      vol have LOWER subsequent returns — the opposite of what CAPM predicts.
+      SORT DIRECTION INVERTED: Q1 = lowest idiovol = long side of the anomaly.
+      Requires ff_factors_daily view (mktrf, smb, hml) to be registered.
+      Annualization: idiovol * sqrt(252).
+
+  - name: beta_60m
+    description: >
+      Market beta estimated from CAPM OLS over trailing 60 monthly returns
+      (Frazzini-Pedersen 2014 Betting Against Beta).
+    kind: library
+    library_fn: optlab_research.signals.library.beta_60m.compute
+    lookback_months: 60
+    min_obs: 36
+    source_table: crsp_msf
+    notes: >
+      SORT DIRECTION INVERTED: Q1 (lowest beta = defensive stocks) is the long
+      side of the BAB anomaly. Frazzini-Pedersen (2014) show that leverage-
+      constrained investors bid up high-beta assets, making them overpriced.
+      Regression: (ret_i - rf) ~ beta * mktrf. Market proxy = mktrf from
+      ff_factors_monthly. Requires ff_factors_monthly view to be registered
+      (columns: date, mktrf, rf).
+      Minimum 36 of 60 months required. For robustness, consider requiring
+      stocks to have traded in the most recent month (use size or price filter).
+      Beta is not shrunk here; Vasicek shrinkage toward 1.0 can be added as
+      a post-processing step in the backtest config.
+
+  # ─── Investment ──────────────────────────────────────────────────────────────
+
+  - name: asset_growth
+    description: >
+      Year-over-year growth in total assets (Cooper, Gulen, Schill 2008).
+      High asset growth = overinvestment = lower future returns.
+    kind: library
+    library_fn: optlab_research.signals.library.asset_growth.compute
+    source_table: comp_funda
+    notes: >
+      SORT DIRECTION INVERTED: Q1 (lowest asset growth = conservative investment)
+      is the long side. Cooper et al. (2008) show asset growth is among the
+      strongest predictors of cross-sectional returns; high growers underperform
+      regardless of whether growth was funded by debt or equity.
+      Formula: (AT_t - AT_{t-1}) / AT_{t-1} where subscripts denote the two
+      most recent PIT-available fiscal years. Requires two PIT-gated funda rows
+      per gvkey — implemented as a library signal because it needs lagged AT
+      from comp_funda directly (the universe only attaches one funda row).
+      Require both AT observations > 0. Filter to non-financial firms (SIC != 6xxx)
+      to avoid balance-sheet regime changes distorting the sort.

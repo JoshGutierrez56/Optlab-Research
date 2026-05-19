@@ -1,0 +1,70 @@
+# ── Data files (WRDS-licensed, never commit) ──────────────────────────────────
+data/
+db/
+*.parquet
+*.arrow
+*.feather
+
+# ── Backtest outputs ───────────────────────────────────────────────────────────
+manifests/
+results/
+reports/
+
+# ── Jupyter ────────────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/
+
+# ── Python ─────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.installed.cfg
+lib/
+lib64/
+
+# ── Virtual environments ───────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ── Testing ────────────────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# ── Type checkers ──────────────────────────────────────────────────────────────
+.mypy_cache/
+.pyright/
+
+# ── OS ─────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── IDE ────────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── WRDS credentials ───────────────────────────────────────────────────────────
+.pgpass
+pgpass.conf
+*.env
+.env*
+
+# ── IBKR ──────────────────────────────────────────────────────────────────────
+data/ibkr_chains/
+
+# ── OneDrive lock files ────────────────────────────────────────────────────────
+*.tmp
+~$*

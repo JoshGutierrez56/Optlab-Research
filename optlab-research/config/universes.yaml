@@ -1,0 +1,88 @@
+# config/universes.yaml
+#
+# Named universe presets for the workbench.
+#
+# Adding a new universe requires only a new entry here — no Python changes.
+#
+# ─── Field reference ────────────────────────────────────────────────────────────
+#
+#  name             : canonical identifier (snake_case, unique)
+#  description      : one-line description
+#  price_source     : "monthly" (crsp_msf, default) or "daily" (crsp_dsf).
+#                     Use "monthly" until crsp_dsf is refreshed past 2017.
+#  base_filters     : mandatory screening criteria applied before any ranking
+#    shrcd          : list of valid CRSP share codes (default [10, 11])
+#    exchcd         : list of valid exchange codes (default [1, 2, 3] = NYSE/AMEX/NASDAQ)
+#    min_price      : minimum stock price in $ (applied to abs(prc))
+#    min_mcap_musd  : minimum market cap in $M (optional)
+#  ranking          : optional; applies AFTER base_filters to trim by size or volume
+#    method         : "mcap_top_n" or "dolvol_top_n"
+#    top_n          : number of firms to keep
+#    lookback_months: (dolvol_top_n only) months of volume history to average
+#
+# ─── Russell index approximations ───────────────────────────────────────────────
+# We do not have Russell reconstitution dates in this data lake. The presets below
+# approximate Russell membership by ranking on June-end market cap, which is how
+# FTSE Russell constructs the indices in practice. Results will differ from actual
+# index membership for borderline names, but should match 90%+ of the constituents
+# for any given date.
+#
+# Use these presets for factor research and attribution; for precise benchmark
+# tracking, obtain the actual index membership from CRSP Index files.
+# ────────────────────────────────────────────────────────────────────────────────
+
+universes:
+
+  - name: russell3000
+    description: >
+      Approximate Russell 3000 — top 3000 US common stocks by market cap.
+      Covers ~98% of investable US equity market cap.
+    price_source: monthly
+    base_filters:
+      shrcd: [10, 11]
+      exchcd: [1, 2, 3]
+      min_price: 1.0
+    ranking:
+      method: mcap_top_n
+      top_n: 3000
+
+  - name: russell1000
+    description: >
+      Approximate Russell 1000 — top 1000 US common stocks by market cap.
+      Large- and mid-cap; covers ~92% of investable US equity market cap.
+    price_source: monthly
+    base_filters:
+      shrcd: [10, 11]
+      exchcd: [1, 2, 3]
+      min_price: 1.0
+    ranking:
+      method: mcap_top_n
+      top_n: 1000
+
+  - name: liquid_500
+    description: >
+      Top 500 US common stocks by 3-month average daily dollar volume.
+      Most practically tradeable names; preferred for strategies sensitive
+      to transaction costs.
+    price_source: monthly
+    base_filters:
+      shrcd: [10, 11]
+      exchcd: [1, 2, 3]
+      min_price: 5.0
+    ranking:
+      method: dolvol_top_n
+      top_n: 500
+      lookback_months: 3
+
+  - name: tradeable
+    description: >
+      US common stocks meeting minimum price ($5) and market cap ($100M)
+      thresholds. No size cap — roughly 2000–2500 names depending on the date.
+      Use for strategies where you want to avoid micro-caps but not impose
+      a hard size ceiling.
+    price_source: monthly
+    base_filters:
+      shrcd: [10, 11]
+      exchcd: [1, 2, 3]
+      min_price: 5.0
+      min_mcap_musd: 100.0

@@ -1,0 +1,113 @@
+underlyings:
+ # Index ETFs
+ - symbol: SPY
+   exchange: SMART
+   currency: USD
+   priority: 1
+ - symbol: QQQ
+   exchange: SMART
+   currency: USD
+   priority: 1
+ - symbol: IWM
+   exchange: SMART
+   currency: USD
+   priority: 1
+ # Mega-cap single names
+ - symbol: AAPL
+   exchange: SMART
+   currency: USD
+   priority: 2
+ - symbol: MSFT
+   exchange: SMART
+   currency: USD
+   priority: 2
+ - symbol: NVDA
+   exchange: SMART
+   currency: USD
+   priority: 2
+ - symbol: TSLA
+   exchange: SMART
+   currency: USD
+   priority: 2
+ - symbol: AMZN
+   exchange: SMART
+   currency: USD
+   priority: 2
+ - symbol: GOOGL
+   exchange: SMART
+   currency: USD
+   priority: 2
+ - symbol: META
+   exchange: SMART
+   currency: USD
+   priority: 2
+ - symbol: AMD
+   exchange: SMART
+   currency: USD
+   priority: 2
+ - symbol: NFLX
+   exchange: SMART
+   currency: USD
+   priority: 2
+ # Financials & Energy
+ - symbol: JPM
+   exchange: SMART
+   currency: USD
+   priority: 3
+ - symbol: GS
+   exchange: SMART
+   currency: USD
+   priority: 3
+ - symbol: BAC
+   exchange: SMART
+   currency: USD
+   priority: 3
+ - symbol: XOM
+   exchange: SMART
+   currency: USD
+   priority: 3
+ - symbol: CVX
+   exchange: SMART
+   currency: USD
+   priority: 3
+ - symbol: LLY
+   exchange: SMART
+   currency: USD
+   priority: 3
+ - symbol: UNH
+   exchange: SMART
+   currency: USD
+   priority: 3
+ - symbol: V
+   exchange: SMART
+   currency: USD
+   priority: 3
+
+connection:
+ host: 127.0.0.1
+ port: 7497 # 7497 = paper trading, 7496 = live
+ client_id: 1
+ timeout: 30 # seconds
+ readonly: true # never send orders from this connection
+
+snapshot:
+ max_expirations: 6 # how many expiration dates to fetch
+ max_strikes_atm: 20 # strikes above and below ATM
+ fields:
+   - BID
+   - ASK
+   - LAST
+   - VOLUME
+   - OPEN_INT
+   - MODEL_OPTION # includes IV and Greeks
+ rate_limit_seconds: 0.5 # pause between contract requests
+ retry_attempts: 3
+ retry_delay_seconds: 5
+
+storage:
+ base_path: data/ibkr_chains
+ format: parquet
+ partition_by:
+   - underlying
+   - year
+   - month

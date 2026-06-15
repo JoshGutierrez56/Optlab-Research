@@ -51,18 +51,17 @@ def main():
         with IBKRSnapshot(config) as snap:
             print(" Connected successfully")
 
-        print("\nStep 2: Fetching SPY option chain (2 expirations, 5 strikes ATM)...")
-        quotes = snap.fetch("SPY")
-        print(f" Fetched {len(quotes)} option quotes")
+            print("\nStep 2: Fetching SPY option chain (2 expirations, 5 strikes ATM)...")
+            quotes = snap.fetch("SPY")
+            print(f" Fetched {len(quotes)} option quotes")
 
-        if not quotes:
-            print(" WARNING: No quotes returned. Check TWS connection and market hours.")
-            return
+            if not quotes:
+                print(" WARNING: No quotes returned. Check TWS connection and market hours.")
+                return
 
-        df = snap.to_polars(quotes)
-        print(f" DataFrame shape: {df.shape}")
-        print(f" Columns: {df.columns}")
-
+            df = snap.to_polars(quotes)
+            print(f" DataFrame shape: {df.shape}")
+            print(f" Columns: {df.columns}")
     except ImportError as e:
         print(f"\nERROR: {e}")
         return

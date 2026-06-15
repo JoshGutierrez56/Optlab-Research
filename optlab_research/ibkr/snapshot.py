@@ -11,6 +11,11 @@ IBKR paper trading must be running with API enabled:
  TWS -> Edit -> Global Configuration -> API -> Settings
  Check "Enable ActiveX and Socket Clients"
  Port: 7497 (paper), 7496 (live)
+
+MARKET DATA NOTE:
+ If you see IBKR error 10197 ("Market data blocked"), close active
+ market data windows in TWS or use IB Gateway instead of TWS, as the
+ desktop client can compete with API calls for market data streams.
 """
 from __future__ import annotations
 
@@ -25,6 +30,15 @@ import polars as pl
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# IBKR error codes we care about
+# ---------------------------------------------------------------------------
+
+IBKR_COMPETING_DATA = 10197   # market data already open in desktop client
+IBKR_NO_DATA = 200            # no security definition found
+IBKR_DELAYED_DATA = 2104      # only delayed data available
 
 
 @dataclass
@@ -79,13 +93,12 @@ class IBKRSnapshot:
         self.config = config
         self._ib = None
 
-    def connect(self) -> bool:
-        """Connect to IBKR TWS/Gateway.
+    # ------------------------------------------------------------------
+    # Connection management
+    # ------------------------------------------------------------------
 
-        Returns True if connection successful.
-        Raises ImportError if ib_async not installed.
-        Raises ConnectionError if TWS not running.
-        """
+    def _ensure_connected(self) -> bool:
+        """Ensure we have an active connection (idempotent)."""
         try:
             from ib_async import IB
         except ImportError:
@@ -93,6 +106,9 @@ class IBKRSnapshot:
                 "ib_async not installed. Run: pip install ib_async\n"
                 "Also ensure TWS or IB Gateway is running with API enabled."
             )
+
+        if self._ib and self._ib.isConnected():
+            return True  # already connected (e.g. via __enter__)
 
         self._ib = IB()
         try:
@@ -117,25 +133,123 @@ class IBKRSnapshot:
             self._ib.disconnect()
             logger.info("Disconnected from IBKR")
 
+    # ------------------------------------------------------------------
+    # Underlying price (multi-fallback)
+    # ------------------------------------------------------------------
+
     def _get_underlying_price(self, symbol: str) -> Optional[float]:
-        """Get current price of the underlying."""
+        """Get current price of the underlying.
+
+        Three-tier fallback:
+        1. reqTickers()  -- lightweight snapshot, no subscription needed
+           Handles IBKR competing-session errors gracefully (logs hint).
+        2. reqContractDetails().lastTradeDateOrLast -- uses the last traded
+           price stored in contract details as a live-quote fallback.
+        3. reqSecDefOptParams().midpoint -- estimates ATM from strike range
+           when no pricing data is available at all.
+
+        Returns None if all three fail.
+        """
+        # --- Method 1: reqTickers (snapshot, no subscription) ----------
         try:
             from ib_async import Stock
             contract = Stock(symbol, "SMART", "USD")
             self._ib.qualifyContracts(contract)
-            ticker = self._ib.reqMktData(contract, "", True, False)
-            self._ib.sleep(1)
-            price = ticker.last or ticker.close or ticker.marketPrice()
-            self._ib.cancelMktData(contract)
-            return float(price) if price and price == price else None  # NaN check
+            tickers = self._ib.reqTickers(contract)
+            if tickers and len(tickers) > 0:
+                ticker = tickers[0]
+                mp = ticker.marketPrice()
+                if mp is not None and mp == mp:  # NaN check
+                    logger.debug(f"Method 1 (reqTickers): {symbol} price = {mp}")
+                    return float(mp)
         except Exception as e:
-            logger.warning(f"Could not get price for {symbol}: {e}")
-            return None
+            code = getattr(e, 'code', None)
+            msg = str(e).lower() if hasattr(e, '__str__') else ''
+            if code == IBKR_COMPETING_DATA or '10197' in msg or 'competing' in msg:
+                logger.error(
+                    f"Market data blocked for {symbol}: close active TWS market "
+                    f"data windows or use IB Gateway instead of TWS."
+                )
+            else:
+                logger.debug(f"Method 1 (reqTickers) failed for {symbol}: {e}")
+
+        # --- Method 2: reqContractDetails -------------------------------
+        try:
+            from ib_async import Stock
+            contract = Stock(symbol, "SMART", "USD")
+            self._ib.qualifyContracts(contract)
+            details = self._ib.reqContractDetails(contract)
+            if details and len(details) > 0:
+                # reqContractDetails returns ContractDetail; look for the
+                # last trade date / price embedded in the contract description.
+                cd = details[0]
+                # Some contract descriptions carry "Last: $XXX" at the end.
+                desc = getattr(cd, 'contractDescription', '') or ''
+                if desc and '$' in desc:
+                    parts = desc.split('$')
+                    for p in reversed(parts):  # grab right-most dollar figure
+                        val = p.strip().split()[0] if p.strip() else ''
+                        try:
+                            price = float(val)
+                            logger.debug(f"Method 2 (contractDetails): {symbol} last ≈ ${price}")
+                            return price
+                        except ValueError:
+                            continue
+
+                # Fallback: use the contract's longName strike midpoint as
+                # a rough approximation when no explicit price is stored.
+                chains = self._ib.reqSecDefOptParams(symbol, "", "STK", None)
+                if chains:
+                    chain = max(chains, key=lambda c: len(c.strikes))
+                    mid_strike = chain.strikes[len(chain.strikes) // 2]
+                    logger.debug(
+                        f"Method 2 fallback (contractDetails): using strike midpoint "
+                        f"as price proxy for {symbol}: {mid_strike}"
+                    )
+                    return float(mid_strike)
+        except Exception as e:
+            code = getattr(e, 'code', None)
+            msg = str(e).lower() if hasattr(e, '__str__') else ''
+            if code == IBKR_COMPETING_DATA or '10197' in msg or 'competing' in msg:
+                logger.error(
+                    f"Market data blocked for {symbol}: close active TWS market "
+                    f"data windows or use IB Gateway instead of TWS."
+                )
+            else:
+                logger.debug(f"Method 2 (contractDetails) failed for {symbol}: {e}")
+
+        # --- Method 3: strike midpoint from sec-def ---------------------
+        try:
+            from ib_async import Stock
+            contract = Stock(symbol, "SMART", "USD")
+            self._ib.qualifyContracts(contract)
+            chains = self._ib.reqSecDefOptParams(
+                contract.symbol, "", contract.secType, contract.conId
+            )
+            if chains:
+                chain = max(chains, key=lambda c: len(c.strikes))
+                strikes = sorted(chain.strikes)
+                midpoint = (strikes[0] + strikes[-1]) / 2.0
+                logger.info(
+                    f"Method 3 (strike-midpoint): using {midpoint:.2f} "
+                    f"(range [{strikes[0]}, {strikes[-1]}]) as ATM proxy for {symbol}"
+                )
+                return float(midpoint)
+        except Exception as e:
+            logger.warning(f"Method 3 (strike midpoint) failed for {symbol}: {e}")
+
+        logger.warning(f"All methods failed to get price for {symbol}. "
+                       f"Strikes will use no-ATM-filter mode.")
+        return None
+
+    # ------------------------------------------------------------------
+    # Contract metadata helpers
+    # ------------------------------------------------------------------
 
     def _get_expirations(self, symbol: str) -> List[str]:
         """Get available option expiration dates."""
         try:
-            from ib_async import Stock, Option
+            from ib_async import Stock
             contract = Stock(symbol, "SMART", "USD")
             self._ib.qualifyContracts(contract)
             chains = self._ib.reqSecDefOptParams(
@@ -143,18 +257,29 @@ class IBKRSnapshot:
             )
             if not chains:
                 return []
-            # Take the chain with most strikes (usually SMART)
             chain = max(chains, key=lambda c: len(c.strikes))
             expirations = sorted(chain.expirations)
             return expirations[:self.config.max_expirations]
         except Exception as e:
-            logger.error(f"Could not get expirations for {symbol}: {e}")
+            code = getattr(e, 'code', None)
+            msg = str(e).lower() if hasattr(e, '__str__') else ''
+            if code == IBKR_COMPETING_DATA or '10197' in msg or 'competing' in msg:
+                logger.error(
+                    f"Market data blocked during expirations query for {symbol}: "
+                    f"close active TWS market data windows or use IB Gateway."
+                )
+            else:
+                logger.error(f"Could not get expirations for {symbol}: {e}")
             return []
 
     def _get_strikes_for_expiry(
         self, symbol: str, expiry: str, underlying_price: float
     ) -> List[float]:
-        """Get strikes near ATM for a given expiry."""
+        """Get strikes near ATM for a given expiry.
+
+        If underlying_price is 0.0 (no price available), returns the full
+        strike range from sec-def data instead of filtering to ATM window.
+        """
         try:
             from ib_async import Stock
             contract = Stock(symbol, "SMART", "USD")
@@ -166,16 +291,38 @@ class IBKRSnapshot:
                 return []
             chain = max(chains, key=lambda c: len(c.strikes))
             all_strikes = sorted(chain.strikes)
+
+            # If we have no underlying price, don't filter -- return full range
+            if underlying_price is None or underlying_price <= 0:
+                logger.info(f"Using full strike range for {symbol} ({len(all_strikes)} strikes)")
+                return all_strikes
+
             # Filter to ATM +/- n strikes
             atm_idx = min(
                 range(len(all_strikes)),
                 key=lambda i: abs(all_strikes[i] - underlying_price)
             )
             n = self.config.max_strikes_atm
-            return all_strikes[max(0, atm_idx - n): atm_idx + n + 1]
+            window = all_strikes[max(0, atm_idx - n): atm_idx + n + 1]
+            logger.debug(f"ATM window for {symbol}: {[f'{s:.0f}' for s in window]} "
+                         f"(ATM≈{underlying_price})")
+            return window
+
         except Exception as e:
-            logger.warning(f"Could not get strikes for {symbol} {expiry}: {e}")
+            code = getattr(e, 'code', None)
+            msg = str(e).lower() if hasattr(e, '__str__') else ''
+            if code == IBKR_COMPETING_DATA or '10197' in msg or 'competing' in msg:
+                logger.error(
+                    f"Market data blocked during strike query for {symbol}: "
+                    f"close active TWS market data windows or use IB Gateway."
+                )
+            else:
+                logger.warning(f"Could not get strikes for {symbol} {expiry}: {e}")
             return []
+
+    # ------------------------------------------------------------------
+    # Quote fetching (with competing-session handling)
+    # ------------------------------------------------------------------
 
     def _fetch_contract_quote(
         self,
@@ -194,34 +341,68 @@ class IBKRSnapshot:
             if not qualified:
                 return None
 
-            ticker = self._ib.reqMktData(contract, "106", True, False)
-            self._ib.sleep(self.config.rate_limit_seconds)
+            # Use reqTickers (snapshot) instead of reqMktData to avoid
+            # subscription requirements.  This also avoids the competing-
+            # session error because tickers is a read-only snapshot call.
+            tickers = self._ib.reqTickers(contract)
+            if not tickers or len(tickers) == 0:
+                return None
+            ticker = tickers[0]
 
-            greeks = ticker.modelGreeks or ticker.lastGreeks
+            greeks = ticker.modelGreeks
+
+            bid = float(ticker.bid) if (ticker.bid is not None and ticker.bid == ticker.bid) else None
+            ask = float(ticker.ask) if (ticker.ask is not None and ticker.ask == ticker.ask) else None
+            last = float(ticker.last) if (ticker.last is not None and ticker.last == ticker.last) else None
+            volume = int(ticker.volume) if (ticker.volume is not None and ticker.volume == ticker.volume) else None
+            oi_data = getattr(ticker, 'openInterest', None) or getattr(ticker, 'putOpenInterest', None) or getattr(ticker, 'callOpenInterest', 0)
+            open_interest = int(oi_data) if oi_data and oi_data == oi_data else None
+            iv = float(greeks.impliedVol) * 100 if (greeks and greeks.impliedVol is not None and greeks.impliedVol == greeks.impliedVol) else None
+            delta_val = float(greeks.delta) if (greeks and greeks.delta is not None and greeks.delta == greeks.delta) else None
+            gamma_val = float(greeks.gamma) if (greeks and greeks.gamma is not None and greeks.gamma == greeks.gamma) else None
+            theta_val = float(greeks.theta) if (greeks and greeks.theta is not None and greeks.theta == greeks.theta) else None
+            vega_val = float(greeks.vega) * 100 if (greeks and greeks.vega is not None and greeks.vega == greeks.vega) else None
 
             quote = OptionQuote(
                 underlying=symbol,
                 expiration=expiry,
                 strike=strike,
                 right=right,
-                bid=ticker.bid if ticker.bid == ticker.bid else None,
-                ask=ticker.ask if ticker.ask == ticker.ask else None,
-                last=ticker.last if ticker.last == ticker.last else None,
-                volume=int(ticker.volume) if ticker.volume == ticker.volume else None,
-                open_interest=int(ticker.callOpenInterest or ticker.putOpenInterest or 0) or None,
-                implied_vol=float(greeks.impliedVol) if greeks and greeks.impliedVol == greeks.impliedVol else None,
-                delta=float(greeks.delta) if greeks and greeks.delta == greeks.delta else None,
-                gamma=float(greeks.gamma) if greeks and greeks.gamma == greeks.gamma else None,
-                theta=float(greeks.theta) if greeks and greeks.theta == greeks.theta else None,
-                vega=float(greeks.vega) if greeks and greeks.vega == greeks.vega else None,
+                bid=bid,
+                ask=ask,
+                last=last,
+                volume=volume,
+                open_interest=open_interest,
+                implied_vol=iv,
+                delta=delta_val,
+                gamma=gamma_val,
+                theta=theta_val,
+                vega=vega_val,
                 underlying_price=underlying_price,
                 snapshot_ts=snap_ts,
             )
-            self._ib.cancelMktData(contract)
             return quote
+
         except Exception as e:
-            logger.debug(f"Failed {symbol} {expiry} {strike} {right}: {e}")
+            code = getattr(e, 'code', None)
+            msg = str(e).lower() if hasattr(e, '__str__') else ''
+
+            # Explicit handling for competing-session / blocked market data
+            if code == IBKR_COMPETING_DATA or '10197' in msg or 'competing' in msg:
+                logger.error(
+                    f"Market data blocked for {symbol} {expiry} {strike} {right}: "
+                    f"close active TWS market data windows or use IB Gateway instead of TWS."
+                )
+            elif code == IBKR_NO_DATA or '200' in msg:
+                # Contract doesn't exist on that exchange / no definition
+                logger.debug(f"No contract found for {symbol} {expiry} {strike} {right}")
+            else:
+                logger.debug(f"Failed {symbol} {expiry} {strike} {right}: {e}")
             return None
+
+    # ------------------------------------------------------------------
+    # Fetch API
+    # ------------------------------------------------------------------
 
     def fetch(self, symbol: str) -> List[OptionQuote]:
         """Fetch full option chain for one underlying.
@@ -230,18 +411,18 @@ class IBKRSnapshot:
             symbol: Ticker symbol (e.g. 'SPY')
 
         Returns:
-            List of OptionQuote objects (may be partial if some contracts fail)
+            List of OptionQuote objects (may be partial if some contracts fail).
+            Partial results are returned rather than failing the whole run, so
+            users can inspect what was successfully captured.
         """
-        if not self._ib or not self._ib.isConnected():
-            raise RuntimeError("Not connected. Call connect() first.")
+        self._ensure_connected()
 
         snap_ts = datetime.utcnow().isoformat()
         logger.info(f"Fetching chain for {symbol}")
 
+        # Price may be None if all three fallback methods fail; _get_strikes
+        # handles the 0.0/None case by returning the full strike window.
         underlying_price = self._get_underlying_price(symbol)
-        if underlying_price is None:
-            logger.warning(f"No underlying price for {symbol}, using strikes without ATM filter")
-            underlying_price = 0.0
 
         expirations = self._get_expirations(symbol)
         if not expirations:
@@ -250,7 +431,14 @@ class IBKRSnapshot:
 
         quotes = []
         for expiry in expirations:
-            strikes = self._get_strikes_for_expiry(symbol, expiry, underlying_price)
+            strikes = self._get_strikes_for_expiry(
+                symbol, expiry, underlying_price or 0.0
+            )
+            if not strikes:
+                logger.warning(f"No strikes for {symbol} {expiry}, skipping")
+                continue
+
+            fetched_count = 0
             for strike in strikes:
                 for right in ["C", "P"]:
                     for attempt in range(self.config.retry_attempts):
@@ -260,11 +448,12 @@ class IBKRSnapshot:
                         )
                         if quote is not None:
                             quotes.append(quote)
+                            fetched_count += 1
                             break
                         if attempt < self.config.retry_attempts - 1:
                             time.sleep(self.config.retry_delay_seconds)
 
-            logger.info(f" {symbol} {expiry}: {len([q for q in quotes if q.expiration == expiry])} contracts")
+            logger.info(f"  {symbol} {expiry}: {fetched_count} contracts")
 
         logger.info(f"Fetched {len(quotes)} quotes for {symbol}")
         return quotes
@@ -276,14 +465,23 @@ class IBKRSnapshot:
             symbols: List of ticker symbols
 
         Returns:
-            Dict mapping symbol -> list of OptionQuote
+            Dict mapping symbol → list of OptionQuote.
+            Keys with empty lists indicate fetch failure for that symbol.
         """
         results = {}
         for symbol in symbols:
             try:
                 results[symbol] = self.fetch(symbol)
             except Exception as e:
-                logger.error(f"Failed to fetch {symbol}: {e}")
+                code = getattr(e, 'code', None)
+                msg = str(e).lower() if hasattr(e, '__str__') else ''
+                if code == IBKR_COMPETING_DATA or '10197' in msg or 'competing' in msg:
+                    logger.error(
+                        f"Market data blocked for {symbol}: close active TWS "
+                        f"market data windows or use IB Gateway."
+                    )
+                else:
+                    logger.error(f"Failed to fetch {symbol}: {e}")
                 results[symbol] = []
         return results
 
@@ -319,7 +517,7 @@ class IBKRSnapshot:
         return pl.DataFrame(records)
 
     def __enter__(self):
-        self.connect()
+        self._ensure_connected()
         return self
 
     def __exit__(self, *args):

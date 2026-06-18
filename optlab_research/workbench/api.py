@@ -17,8 +17,17 @@ Usage:
 from __future__ import annotations
 
 from contextlib import contextmanager
-from typing import Optional, Union
+from datetime import date
+from typing import Any, Optional, Union
+
 import polars as pl
+import pandas as pd
+
+from optlab_research.data.orats import (
+    OratsConfigurationError,
+    OratsOptionsLoader,
+    load_orats_options,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -129,6 +138,7 @@ def backtest(
  long_quantile: int = 5,
  short_quantile: int = 1,
  tcost_bps: float = 0.0,
+ options_data_provider=None,
 ):
  """Run a full backtest for a signal over a date range.
 
@@ -144,6 +154,9 @@ def backtest(
   long_quantile: Quantile to go long (default: 5, highest signal)
   short_quantile: Quantile to go short (default: 1, lowest signal)
   tcost_bps: Transaction cost assumption in basis points (default: 0)
+  options_data_provider: Optional callable for options-event studies.
+                         Defaults to None so ordinary backtests never touch
+                         ORATS credentials or external options data.
 
  Returns:
   BacktestResult object with .summary(), .returns, .plot_cumulative(), etc.
@@ -166,8 +179,35 @@ def backtest(
   long_quantile=long_quantile,
   short_quantile=short_quantile,
   tcost_bps=tcost_bps,
+  options_data_provider=options_data_provider,
  )
  return Backtest(cfg).run(con)
+
+
+# ---------------------------------------------------------------------------
+# Options data
+# ---------------------------------------------------------------------------
+
+def load_orats_options_data(
+ ticker: str,
+ start_date: date | str,
+ end_date: date | str | None = None,
+ fields: tuple[str, ...] | None = None,
+ **params: Any,
+) -> pd.DataFrame:
+ """Load options data from ORATS through the project data adapter.
+
+ The ORATS endpoint adapter is isolated in optlab_research.data.orats. Until
+ that adapter is implemented, this function raises the safe NotImplementedError
+ from that module without exposing credentials or remote URLs.
+ """
+ return load_orats_options(
+  ticker=ticker,
+  start_date=start_date,
+  end_date=end_date,
+  fields=fields,
+  **params,
+ )
 
 
 # ---------------------------------------------------------------------------

@@ -103,7 +103,7 @@ import hashlib
 import json
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import duckdb
 import polars as pl
@@ -201,6 +201,10 @@ class BacktestConfig(BaseModel):
     manifest_dir: Optional[str] = None
     """Directory for manifest JSON files. Defaults to <repo_root>/manifests/."""
 
+    options_data_provider: Optional[Callable[..., pl.DataFrame]] = None
+    """Optional provider for external options data. Defaults to None so ordinary
+    equity backtests never touch credentials or remote data providers."""
+
     @model_validator(mode="after")
     def _resolve_long_quantile(self) -> "BacktestConfig":
         if self.long_quantile is None:
@@ -241,6 +245,7 @@ class Backtest:
         if isinstance(config, dict):
             config = BacktestConfig(**config)
         self.config = config
+        self.options_data_provider = config.options_data_provider
 
     @classmethod
     def from_kwargs(cls, **kwargs: object) -> "Backtest":

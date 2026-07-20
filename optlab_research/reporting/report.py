@@ -1,290 +1,183 @@
-"""Backtest report generator.
+"""Self-contained HTML reports for :class:`BacktestResult` objects."""
 
-Produces a multi-section HTML report from a BacktestResult object.
-Designed to be readable by a portfolio manager without any code knowledge.
-
-Usage:
- from optlab_research.reporting import BacktestReport
- rpt = BacktestReport(result, title="Momentum Factor — Russell 3000")
- rpt.save("outputs/momentum_report.html")
-"""
 from __future__ import annotations
 
-import os
-from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Optional
 import base64
+import html
 import io
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
 
-import numpy as np
 import matplotlib
-matplotlib.use('Agg')
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mtick
+import numpy as np
 
 
 @dataclass
 class ReportConfig:
- """Configuration for report generation."""
- title: str = "Factor Backtest Report"
- subtitle: str = ""
- author: str = "optlab-research"
- institution: str = "Northeastern University — 360 Huntington Fund"
- benchmark_name: str = "Russell 1000"
- include_methodology: bool = True
- include_top_bottom: bool = True
- n_top_bottom: int = 10
- primary_color: str = "#1a365d"
- accent_color: str = "#c7923e"
+    """Display settings for a backtest report."""
+
+    title: str = "Factor Backtest Report"
+    subtitle: str = ""
+    author: str = "optlab-research"
+    institution: str = "Northeastern University - 360 Huntington Fund"
+    benchmark_name: str = "Russell 1000"
+    include_methodology: bool = True
+    include_top_bottom: bool = True
+    n_top_bottom: int = 10
+    primary_color: str = "#1a365d"
+    accent_color: str = "#c7923e"
 
 
 class BacktestReport:
- """Generates a professional HTML report from a BacktestResult.
+    """Render a professional, portable HTML report from a backtest result."""
 
- The report includes:
- - Cover section with key statistics
- - Cumulative returns chart
- - Drawdown chart
- - Monthly returns heatmap
- - Factor attribution table (if available)
- - Methodology notes
- """
+    def __init__(self, result, config: ReportConfig | None = None):
+        self.result = result
+        self.config = config or ReportConfig()
 
- def __init__(self, result, config: Optional[ReportConfig] = None):
- """
- Args:
- result: BacktestResult object from optlab_research.backtest
- config: ReportConfig with display options
- """
- self.result = result
- self.config = config or ReportConfig()
- self._charts: dict[str, str] = {}
+    @staticmethod
+    def _fig_to_b64(fig) -> str:
+        buffer = io.BytesIO()
+        fig.savefig(
+            buffer,
+            format="png",
+            dpi=150,
+            bbox_inches="tight",
+            facecolor="white",
+        )
+        plt.close(fig)
+        return "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode()
 
- def _fig_to_b64(self, fig) -> str:
- """Convert matplotlib figure to base64 PNG for embedding in HTML."""
- buf = io.BytesIO()
- fig.savefig(buf, format='png', dpi=150, bbox_inches='tight',
- facecolor='white', edgecolor='none')
- buf.seek(0)
- b64 = base64.b64encode(buf.read()).decode('utf-8')
- plt.close(fig)
- return f"data:image/png;base64,{b64}"
+    def _returns_series(self):
+        frame = self.result.returns.to_pandas()
+        frame["date"] = frame["date"].astype("datetime64[ns]")
+        frame = frame.set_index("date").sort_index()
+        column = "net_ls_ret" if "net_ls_ret" in frame.columns else "ls_ret"
+        return frame[column].fillna(0.0)
 
- def _chart_cumulative_returns(self) -> str:
- """Generate cumulative returns chart."""
- try:
- returns_df = self.result.returns.to_pandas().set_index('date')
- ls_ret = returns_df.get('ls_ret', returns_df.iloc[:, 0]).fillna(0)
- cum = (1 + ls_ret).cumprod() - 1
+    def _chart_cumulative_returns(self) -> str:
+        returns = self._returns_series()
+        cumulative = (1.0 + returns).cumprod() - 1.0
+        fig, ax = plt.subplots(figsize=(12, 4))
+        ax.plot(cumulative.index, cumulative, color=self.config.primary_color, lw=1.8)
+        ax.axhline(0, color="gray", lw=0.8, ls="--", alpha=0.5)
+        ax.fill_between(cumulative.index, cumulative, 0, alpha=0.1)
+        ax.yaxis.set_major_formatter(mtick.PercentFormatter(1.0))
+        ax.set_title("Cumulative Long-Short Returns")
+        ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+        return self._fig_to_b64(fig)
 
- fig, ax = plt.subplots(figsize=(12, 4))
- ax.plot(cum.index, cum * 100, color=self.config.primary_color,
- lw=1.8, label='Long-Short')
- ax.axhline(0, color='gray', lw=0.8, ls='--', alpha=0.5)
- ax.fill_between(cum.index, cum * 100, 0,
- where=(cum >= 0), alpha=0.1,
- color=self.config.primary_color)
- ax.fill_between(cum.index, cum * 100, 0,
- where=(cum < 0), alpha=0.1, color='red')
- ax.yaxis.set_major_formatter(mtick.PercentFormatter())
- ax.set_title('Cumulative Long-Short Returns', fontsize=12,
- color=self.config.primary_color)
- ax.grid(True, alpha=0.3)
- ax.legend()
- plt.tight_layout()
- return self._fig_to_b64(fig)
- except Exception as e:
- return ""
+    def _chart_drawdown(self) -> str:
+        cumulative = (1.0 + self._returns_series()).cumprod()
+        drawdown = cumulative / cumulative.cummax() - 1.0
+        fig, ax = plt.subplots(figsize=(12, 3))
+        ax.fill_between(drawdown.index, drawdown, 0, color="firebrick", alpha=0.35)
+        ax.plot(drawdown.index, drawdown, color="firebrick", lw=1.0)
+        ax.yaxis.set_major_formatter(mtick.PercentFormatter(1.0))
+        ax.set_title("Drawdown")
+        ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+        return self._fig_to_b64(fig)
 
- def _chart_drawdown(self) -> str:
- """Generate drawdown chart."""
- try:
- returns_df = self.result.returns.to_pandas().set_index('date')
- ls_ret = returns_df.get('ls_ret', returns_df.iloc[:, 0]).fillna(0)
- cum = (1 + ls_ret).cumprod()
- peak = cum.expanding().max()
- dd = (cum - peak) / peak * 100
+    def _chart_monthly_heatmap(self) -> str:
+        returns = self._returns_series()
+        monthly = returns.groupby([returns.index.year, returns.index.month]).sum()
+        pivot = monthly.unstack(level=1).reindex(columns=range(1, 13))
+        labels = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+        fig, ax = plt.subplots(figsize=(14, max(3.5, len(pivot) * 0.45)))
+        values = pivot.to_numpy() * 100.0
+        image = ax.imshow(values, cmap="RdYlGn", aspect="auto", vmin=-10, vmax=10)
+        ax.set_xticks(range(12), labels=labels)
+        ax.set_yticks(range(len(pivot)), labels=pivot.index)
+        for row in range(values.shape[0]):
+            for col in range(values.shape[1]):
+                value = values[row, col]
+                if np.isfinite(value):
+                    ax.text(col, row, f"{value:.1f}%", ha="center", va="center", fontsize=7)
+        fig.colorbar(image, ax=ax, format="%.0f%%", shrink=0.8)
+        ax.set_title("Monthly Returns Heatmap (%)")
+        fig.tight_layout()
+        return self._fig_to_b64(fig)
 
- fig, ax = plt.subplots(figsize=(12, 3))
- ax.fill_between(dd.index, dd, 0, color='red', alpha=0.4)
- ax.plot(dd.index, dd, color='darkred', lw=1.2)
- ax.yaxis.set_major_formatter(mtick.PercentFormatter())
- ax.set_title('Drawdown', fontsize=12, color=self.config.primary_color)
- ax.grid(True, alpha=0.3)
- plt.tight_layout()
- return self._fig_to_b64(fig)
- except Exception as e:
- return ""
+    def _summary_table_html(self) -> str:
+        summary = self.result.summary()
 
- def _chart_monthly_heatmap(self) -> str:
- """Generate monthly returns heatmap."""
- try:
- import pandas as pd
- returns_df = self.result.returns.to_pandas()
- returns_df['date'] = pd.to_datetime(returns_df['date'])
- returns_df = returns_df.set_index('date')
- ls_ret = returns_df.get('ls_ret', returns_df.iloc[:, 0]).fillna(0)
+        def pct(key: str) -> str:
+            value = summary.get(key)
+            return "N/A" if value is None else f"{value:.2%}"
 
- pivot = ls_ret.groupby([ls_ret.index.year, ls_ret.index.month]).sum()
- pivot = pivot.unstack(level=1)
- pivot.columns = ['Jan','Feb','Mar','Apr','May','Jun',
- 'Jul','Aug','Sep','Oct','Nov','Dec']
+        def number(key: str, digits: int = 3) -> str:
+            value = summary.get(key)
+            return "N/A" if value is None else f"{value:.{digits}f}"
 
- fig, ax = plt.subplots(figsize=(14, max(4, len(pivot) * 0.5)))
- im = ax.imshow(pivot.values * 100, cmap='RdYlGn', aspect='auto',
- vmin=-10, vmax=10)
- ax.set_xticks(range(12))
- ax.set_xticklabels(pivot.columns, fontsize=9)
- ax.set_yticks(range(len(pivot)))
- ax.set_yticklabels(pivot.index, fontsize=9)
+        rows = [
+            ("Period", f"{summary.get('start', 'N/A')} to {summary.get('end', 'N/A')}"),
+            ("Annual return (L/S)", pct("ann_return_ls")),
+            ("Annual volatility (L/S)", pct("ann_vol_ls")),
+            ("Sharpe ratio (L/S)", number("sharpe_ls")),
+            ("Maximum drawdown (L/S)", pct("max_drawdown_ls")),
+            ("Monthly win rate", pct("win_rate_ls")),
+            ("Average monthly turnover", pct("avg_monthly_turnover")),
+            ("Average N (long / short)", f"{number('avg_n_long', 1)} / {number('avg_n_short', 1)}"),
+        ]
+        if summary.get("net_ann_return_ls") is not None:
+            rows.insert(2, ("Annual return after costs (L/S)", pct("net_ann_return_ls")))
+            rows.insert(5, ("Sharpe after costs (L/S)", number("net_sharpe_ls")))
+        body = "".join(
+            f'<tr><td class="label">{html.escape(label)}</td><td class="value">{html.escape(value)}</td></tr>'
+            for label, value in rows
+        )
+        return f'<table class="summary-table">{body}</table>'
 
- for i in range(len(pivot)):
- for j in range(12):
- val = pivot.values[i, j]
- if not np.isnan(val):
- ax.text(j, i, f'{val*100:.1f}%', ha='center',
- va='center', fontsize=7,
- color='black' if abs(val) < 0.05 else 'white')
+    def _build_html(self) -> str:
+        cfg = self.config
+        generated = datetime.now().strftime("%B %d, %Y")
+        charts = "".join(
+            f'<div class="chart-block"><img src="{chart}" alt="Backtest chart"></div>'
+            for chart in (
+                self._chart_cumulative_returns(),
+                self._chart_drawdown(),
+                self._chart_monthly_heatmap(),
+            )
+        )
+        methodology = ""
+        if cfg.include_methodology:
+            methodology = """
+            <section><h2>Methodology and limitations</h2><ul>
+            <li>Signals must be dated before their associated forward returns.</li>
+            <li>Portfolio formation and transaction-cost assumptions come from the saved manifest.</li>
+            <li>Results are research evidence, not a forecast or investment recommendation.</li>
+            </ul></section>"""
+        return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{html.escape(cfg.title)}</title><style>
+body{{font-family:Georgia,serif;color:#2d3748;max-width:1000px;margin:0 auto;padding:40px 20px}}
+.cover{{border-bottom:3px solid {cfg.primary_color};padding-bottom:24px;margin-bottom:32px}}
+h1,h2{{color:{cfg.primary_color}}}h1{{margin-bottom:6px}}h2{{font-size:18px;border-bottom:1px solid #e2e8f0;padding-bottom:6px}}
+.subtitle{{color:#718096}}.meta,.footer{{font-size:12px;color:#718096}}section{{margin-bottom:36px}}
+.summary-table{{width:100%;border-collapse:collapse}}.summary-table tr:nth-child(even){{background:#f7fafc}}
+.summary-table td{{padding:8px 12px;border-bottom:1px solid #e2e8f0}}.value{{text-align:right;font-weight:600;color:{cfg.primary_color}}}
+.chart-block{{margin-bottom:24px;border:1px solid #e2e8f0}}.chart-block img{{display:block;width:100%}}
+li{{margin-bottom:8px;line-height:1.5}}.footer{{border-top:1px solid #e2e8f0;padding-top:16px;text-align:center}}
+</style></head><body>
+<div class="cover"><h1>{html.escape(cfg.title)}</h1><div class="subtitle">{html.escape(cfg.subtitle)}</div>
+<div class="meta">{html.escape(cfg.institution)} | Generated {generated} | {html.escape(cfg.author)}</div></div>
+<section><h2>Executive summary</h2>{self._summary_table_html()}</section>
+<section><h2>Performance charts</h2>{charts}</section>{methodology}
+<div class="footer">Generated by optlab-research | {generated}</div></body></html>"""
 
- plt.colorbar(im, ax=ax, format='%.0f%%', shrink=0.8)
- ax.set_title('Monthly Returns Heatmap (%)', fontsize=12,
- color=self.config.primary_color)
- plt.tight_layout()
- return self._fig_to_b64(fig)
- except Exception as e:
- return ""
+    def save(self, path: str | Path) -> str:
+        """Write the portable report to *path* and return its absolute path."""
+        target = Path(path).resolve()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(self._build_html(), encoding="utf-8")
+        return str(target)
 
- def _summary_table_html(self) -> str:
- """Build the executive summary statistics table."""
- try:
- s = self.result.summary()
- rows = [
- ("Period", f"{s.get('start_date', 'N/A')} → {s.get('end_date', 'N/A')}"),
- ("Ann. Return (L/S)", f"{s.get('ann_return_ls', 0):.2%}"),
- ("Ann. Volatility (L/S)", f"{s.get('ann_vol_ls', 0):.2%}"),
- ("Sharpe Ratio (L/S)", f"{s.get('sharpe_ls', 0):.3f}"),
- ("Max Drawdown (L/S)", f"{s.get('max_drawdown_ls', 0):.2%}"),
- ("Monthly Win Rate", f"{s.get('win_rate_ls', 0):.1%}"),
- ("Avg Monthly Turnover", f"{s.get('avg_monthly_turnover', 0):.1%}"),
- ("Avg N (Long / Short)", f"{s.get('avg_n_long', 0):.0f} / {s.get('avg_n_short', 0):.0f}"),
- ("Ann. Return — Long Leg", f"{s.get('ann_return_long', 0):.2%}"),
- ("Ann. Return — Short Leg", f"{s.get('ann_return_short', 0):.2%}"),
- ]
- except Exception:
- rows = [("Status", "Summary not available")]
-
- html = '<table class="summary-table">'
- for label, value in rows:
- html += f'<tr><td class="label">{label}</td><td class="value">{value}</td></tr>'
- html += '</table>'
- return html
-
- def _build_html(self) -> str:
- """Assemble the full HTML report."""
- cfg = self.config
- generated = datetime.now().strftime("%B %d, %Y")
-
- # Generate charts
- chart_cum = self._chart_cumulative_returns()
- chart_dd = self._chart_drawdown()
- chart_heatmap = self._chart_monthly_heatmap()
- summary_html = self._summary_table_html()
-
- chart_section = ""
- if chart_cum:
- chart_section += f'<div class="chart-block"><img src="{chart_cum}" style="width:100%;"/></div>'
- if chart_dd:
- chart_section += f'<div class="chart-block"><img src="{chart_dd}" style="width:100%;"/></div>'
- if chart_heatmap:
- chart_section += f'<div class="chart-block"><img src="{chart_heatmap}" style="width:100%;"/></div>'
-
- methodology_html = ""
- if cfg.include_methodology:
- methodology_html = """
- <div class="section">
- <h2>Methodology</h2>
- <ul>
- <li><strong>Universe construction:</strong> Point-in-time correct using CRSP monthly security file. Delisting returns applied per Shumway (1997) and Beaver et al. (2007): −30% for performance delistings (DLSTCD 500–584), −55% for other involuntary delistings.</li>
- <li><strong>Signal computation:</strong> All signals computed as of the rebalance date using only data available at that time (no look-ahead bias). Fundamental signals use Compustat with a 90-day reporting lag.</li>
- <li><strong>Portfolio construction:</strong> Equal-weighted quintile long-short. Long = Q5 (highest signal), Short = Q1 (lowest signal). Monthly rebalance.</li>
- <li><strong>Transaction costs:</strong> Not applied unless specified in BacktestConfig.</li>
- <li><strong>Factor attribution:</strong> FF6 (Fama-French 5 factors + UMD momentum). Newey-West HAC standard errors, automatic lag selection per Newey-West (1994).</li>
- <li><strong>Data sources:</strong> CRSP monthly security file (crsp_msf), Compustat annual fundamentals (comp_funda), Fama-French factors (Kenneth French Data Library).</li>
- </ul>
- </div>"""
-
- return f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{cfg.title}</title>
-<style>
- * {{ box-sizing: border-box; margin: 0; padding: 0; }}
- body {{ font-family: 'Georgia', serif; color: #2d3748; background: #fff; max-width: 1000px; margin: 0 auto; padding: 40px 20px; }}
- .cover {{ border-bottom: 3px solid {cfg.primary_color}; padding-bottom: 24px; margin-bottom: 32px; }}
- .cover h1 {{ font-size: 28px; color: {cfg.primary_color}; margin-bottom: 6px; }}
- .cover .subtitle {{ font-size: 15px; color: #718096; margin-bottom: 4px; }}
- .cover .meta {{ font-size: 12px; color: #a0aec0; margin-top: 8px; }}
- .section {{ margin-bottom: 36px; }}
- .section h2 {{ font-size: 18px; color: {cfg.primary_color}; border-bottom: 1px solid #e2e8f0; padding-bottom: 6px; margin-bottom: 16px; }}
- .summary-table {{ width: 100%; border-collapse: collapse; font-size: 14px; }}
- .summary-table tr:nth-child(even) {{ background: #f7fafc; }}
- .summary-table td {{ padding: 8px 12px; border-bottom: 1px solid #e2e8f0; }}
- .summary-table td.label {{ color: #4a5568; font-weight: 500; width: 50%; }}
- .summary-table td.value {{ color: {cfg.primary_color}; font-weight: 600; text-align: right; }}
- .chart-block {{ margin-bottom: 24px; border: 1px solid #e2e8f0; border-radius: 4px; overflow: hidden; }}
- .two-col {{ display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }}
- ul {{ padding-left: 20px; }}
- ul li {{ margin-bottom: 8px; font-size: 13px; line-height: 1.6; color: #4a5568; }}
- .footer {{ margin-top: 48px; padding-top: 16px; border-top: 1px solid #e2e8f0; font-size: 11px; color: #a0aec0; text-align: center; }}
- @media print {{ body {{ padding: 20px; }} }}
-</style>
-</head>
-<body>
-
-<div class="cover">
- <h1>{cfg.title}</h1>
- <div class="subtitle">{cfg.subtitle}</div>
- <div class="meta">{cfg.institution} &nbsp;|&nbsp; Generated {generated} &nbsp;|&nbsp; {cfg.author}</div>
-</div>
-
-<div class="section">
- <h2>Executive Summary</h2>
- {summary_html}
-</div>
-
-<div class="section">
- <h2>Performance Charts</h2>
- {chart_section}
-</div>
-
-{methodology_html}
-
-<div class="footer">
- Generated by optlab-research · {cfg.institution} · {generated}
-</div>
-
-</body>
-</html>"""
-
- def save(self, path: str) -> str:
- """Save the report as an HTML file.
-
- Args:
- path: Output file path (should end in .html)
-
- Returns:
- Absolute path of saved file.
- """
- os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
- html = self._build_html()
- with open(path, 'w', encoding='utf-8') as f:
- f.write(html)
- print(f"Report saved: {path}")
- return os.path.abspath(path)
-
- def _repr_html_(self) -> str:
- """Jupyter display support."""
- return self._build_html()
+    def _repr_html_(self) -> str:
+        return self._build_html()

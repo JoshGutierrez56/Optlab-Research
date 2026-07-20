@@ -330,6 +330,17 @@ def compute_portfolio_returns(holdings: pl.DataFrame) -> pl.DataFrame:
     valid = holdings.filter(pl.col("forward_ret").is_not_null())
 
     if valid.height == 0:
+        if holdings.height > 0:
+            return (
+                holdings.select(pl.col("as_of_date").alias("date"))
+                .unique()
+                .sort("date")
+                .with_columns(
+                    pl.lit(None).cast(pl.Float64).alias("long_ret"),
+                    pl.lit(None).cast(pl.Float64).alias("short_ret"),
+                    pl.lit(None).cast(pl.Float64).alias("ls_ret"),
+                )
+            )
         return pl.DataFrame(
             schema={
                 "date": pl.Date,

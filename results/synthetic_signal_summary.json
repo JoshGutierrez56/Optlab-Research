@@ -1,0 +1,38 @@
+{
+  "evidence_type": "deterministic synthetic execution demo",
+  "claim_boundary": "Not a historical backtest and not evidence of investable alpha.",
+  "seed": 42,
+  "summary": {
+    "n_months": 132,
+    "start": "2014-01-01",
+    "end": "2024-12-01",
+    "ann_return_ls": -0.0236,
+    "ann_vol_ls": 0.0805,
+    "sharpe_ls": -0.293,
+    "max_drawdown_ls": -0.3052,
+    "win_rate_ls": 0.455,
+    "ann_return_long": 0.0155,
+    "ann_vol_long": 0.1212,
+    "sharpe_long": 0.128,
+    "ann_return_short": -0.0491,
+    "ann_vol_short": 0.1175,
+    "avg_monthly_turnover": 0.4817,
+    "avg_n_long": 12.0,
+    "avg_n_short": 12.0,
+    "breakeven_cost_bps": -20.4,
+    "net_ann_return_ls": -0.0349,
+    "net_ann_vol_ls": 0.0807,
+    "net_sharpe_ls": -0.433,
+    "net_max_drawdown_ls": -0.3762
+  },
+  "manifest": {
+    "signal": "synthetic_momentum_12_2",
+    "data": "deterministic synthetic monthly returns",
+    "lookback_months": 11,
+    "skip_months": 1,
+    "portfolio": "equal-weight top/bottom quintile",
+    "tcost_model": "flat_one_way_bps",
+    "cost_bps": 20.0,
+    "limitations": "Execution evidence only; no historical-market alpha claim."
+  }
+}

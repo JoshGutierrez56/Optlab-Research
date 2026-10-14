@@ -67,6 +67,7 @@ from __future__ import annotations
 
 import datetime as dt
 from pathlib import Path
+from optlab_research._resources import default_config_path
 from typing import Literal
 
 import duckdb
@@ -152,9 +153,7 @@ class UniverseRegistry(BaseModel):
 
 # ─── Loader ───────────────────────────────────────────────────────────────────
 
-_DEFAULT_UNIVERSES_PATH = (
-    Path(__file__).resolve().parent.parent.parent / "config" / "universes.yaml"
-)
+_DEFAULT_UNIVERSES_PATH = default_config_path("universes.yaml")
 
 # Module-level cache — reloaded only if module is reloaded.
 _registry: UniverseRegistry | None = None

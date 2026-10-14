@@ -1,0 +1,36 @@
+name: Reproducible research checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.21"
+          python-version: "3.11"
+          enable-cache: true
+      - name: Install the locked reference environment
+        run: uv sync --locked --extra dev
+      - name: Test public interfaces and accounting
+        run: uv run --locked --extra dev python -m pytest tests -q
+      - name: Check package distribution
+        run: uv build
+      - name: Install the built wheel without changing locked dependencies
+        run: uv pip install --no-deps --reinstall ./dist/optlab_research-0.1.0-py3-none-any.whl
+      - name: Verify bundled defaults outside source import paths
+        run: uv run --no-sync python -I -c "from optlab_research.signals.registry import load_signals; from optlab_research.universes.builder import load_universes; assert len(load_signals()) == 10; assert len(load_universes()) == 4"

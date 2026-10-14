@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "optlab-research"
 version = "0.1.0"
-description = "Equity research workbench and live options lab built on top of optlab"
+description = "Equity research and portfolio-analysis workbench built on top of optlab"
 requires-python = ">=3.11"
 dependencies = [
     "polars>=0.20",
@@ -28,6 +28,10 @@ dev       = ["pytest>=8.0", "pytest-cov"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["optlab_research"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"config/signals.yaml" = "optlab_research/_config/signals.yaml"
+"config/universes.yaml" = "optlab_research/_config/universes.yaml"
 
 [tool.pytest.ini_options]
 testpaths   = ["tests"]

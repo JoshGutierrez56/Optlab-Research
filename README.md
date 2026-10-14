@@ -1,5 +1,7 @@
 # Optlab Research
 
+[![Research checks](https://github.com/JoshGutierrez56/Optlab-Research/actions/workflows/validation.yml/badge.svg)](https://github.com/JoshGutierrez56/Optlab-Research/actions/workflows/validation.yml)
+
 **A Python, DuckDB and Polars workbench for systematic equity research.**
 
 Separate data access, signal definitions and portfolio evaluation so a research question can be traced from its inputs to its diagnostics. Developed for research workflows associated with Northeastern's 360 Huntington Fund and Options Club.
@@ -34,17 +36,19 @@ This is a research workbench, not a production trading service or a claim of out
 
 ## Quick start: inspect and test without market-data credentials
 
-Use **Python 3.11+** and run from the repository root. The nested `optlab-research/` directory is an older copy, not the installation target.
+Use **Python 3.11** and [uv](https://docs.astral.sh/uv/) for the pinned reference environment, and run from the repository root. The source requires Python 3.11+; the reference workflow is checked on Python 3.11 on Linux and Windows. The nested `optlab-research/` directory is an older copy, not the installation target.
 
 ```bash
 git clone https://github.com/JoshGutierrez56/Optlab-Research.git
 cd Optlab-Research
-python -m pip install -e ".[dev]"
-python -c "from optlab_research.signals.registry import load_signals; print(load_signals().names())"
-python -m pytest tests -q
+uv sync --locked --extra dev --python 3.11
+uv run --locked --extra dev python -c "from optlab_research.signals.registry import load_signals; print(load_signals().names())"
+uv run --locked --extra dev python -m pytest tests -q
 ```
 
 The tests use synthetic fixtures; no WRDS account, broker login or data download is needed. A passing fixture test is not a validation of every real-data path.
+
+[`uv.lock`](uv.lock) records exact versions and package hashes. CI uses that lock, runs the complete test suite, builds and installs the wheel, then checks its ten signal and four universe defaults with source-directory imports disabled. The wheel bundles its defaults; explicit configuration paths still override them. To deliberately change dependencies, update `pyproject.toml`, run `uv lock`, and repeat the checks before publishing. `python -m pip install -e ".[dev]"` remains an alternative development install, but it resolves the declared ranges instead of the pinned reference environment.
 
 ### With your own prepared data lake
 

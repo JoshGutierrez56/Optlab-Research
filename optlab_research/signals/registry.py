@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from enum import Enum
 from pathlib import Path
+from optlab_research._resources import default_config_path
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -140,10 +141,8 @@ class SignalRegistry(BaseModel):
 
 # ─── Loader ───────────────────────────────────────────────────────────────────
 
-# Default path: <repo_root>/config/signals.yaml, resolved relative to this file.
-# This file lives at <repo_root>/optlab_research/signals/registry.py,
-# so parent.parent.parent is the repo root.
-_DEFAULT_SIGNALS_PATH = Path(__file__).resolve().parent.parent.parent / "config" / "signals.yaml"
+# Wheels bundle the defaults; editable checkouts use the canonical config/ file.
+_DEFAULT_SIGNALS_PATH = default_config_path("signals.yaml")
 
 
 def load_signals(path: Path | str | None = None) -> SignalRegistry:
@@ -152,7 +151,7 @@ def load_signals(path: Path | str | None = None) -> SignalRegistry:
     Parameters
     ----------
     path : Path or str, optional
-        Path to signals.yaml. Defaults to config/signals.yaml in the repo root.
+        Path to signals.yaml. Defaults to bundled or source-checkout configuration.
 
     Returns
     -------

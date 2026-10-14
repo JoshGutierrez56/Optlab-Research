@@ -341,7 +341,30 @@ class TestPortfolioReturns:
     def test_all_null_returns_ls_is_null(self):
         h = self._holdings([1, 2], [1.0, -1.0], ["long", "short"], [None, None])
         r = compute_portfolio_returns(h)
+        assert r.height == 1
+        assert r["date"][0] == dt.date(2023, 11, 30)
+        assert r["long_ret"][0] is None
+        assert r["short_ret"][0] is None
         assert r["ls_ret"][0] is None
+
+    def test_missing_return_period_is_retained_between_observed_periods(self):
+        periods = [
+            self._holdings([1, 2], [1.0, -1.0], ["long", "short"],
+                           [0.10, 0.05], as_of_date=dt.date(2023, 10, 31)),
+            self._holdings([1, 2], [1.0, -1.0], ["long", "short"],
+                           [None, None], as_of_date=dt.date(2023, 11, 30)),
+            self._holdings([1, 2], [1.0, -1.0], ["long", "short"],
+                           [0.02, -0.01], as_of_date=dt.date(2023, 12, 31)),
+        ]
+        result = compute_portfolio_returns(pl.concat(periods[::-1]))
+        assert result["date"].to_list() == [
+            dt.date(2023, 10, 31), dt.date(2023, 11, 30), dt.date(2023, 12, 31),
+        ]
+        assert result["ls_ret"].to_list()[0] == pytest.approx(0.05)
+        assert result["ls_ret"].to_list()[1] is None
+        assert result["ls_ret"].to_list()[2] == pytest.approx(0.03)
+        assert result["long_ret"][1] is None
+        assert result["short_ret"][1] is None
 
     def test_output_date_matches_as_of_date(self):
         """date output column should equal as_of_date in the input."""

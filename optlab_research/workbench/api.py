@@ -10,7 +10,6 @@ Usage:
         sig   = wb.signal("momentum_12_2", "2023-12-29", universe=univ, con=con)
         bt    = wb.backtest("momentum_12_2", "2019-01-01", "2023-12-31",
                             universe="russell1000", con=con)
-        attr  = wb.attribution(bt, model="ff6", con=con)
         rpt   = wb.report(bt, title="Momentum Factor")
         rpt.save("outputs/momentum.html")
 """
@@ -72,8 +71,8 @@ def universe(
   name: Universe preset name ('russell3000', 'russell1000', 'liquid_500', 'tradeable')
   as_of: Date string 'YYYY-MM-DD'
   con: DuckDB connection (from wb.open())
-  min_price: Minimum share price filter
-  min_mcap: Minimum market cap filter (in millions USD)
+  min_price: Additional minimum absolute price screen after preset selection
+  min_mcap: Additional minimum market cap screen (millions USD), after preset selection
 
  Returns:
   Polars DataFrame with columns: permno, date, mcap_musd, ...
@@ -82,8 +81,13 @@ def universe(
   with wb.open() as con:
    univ = wb.universe("russell1000", "2023-12-29", con=con)
  """
- from optlab_research.universes.builder import get_universe_as_of
- return get_universe_as_of(name, as_of, con, min_price=min_price, min_mcap=min_mcap)
+ from optlab_research.universes.builder import get_universe
+ frame = get_universe(name, as_of, con)
+ # These are additional screens after the named preset, not overrides that
+ # loosen its configured filters or refill its top-N selection.
+ return frame.filter(
+  (pl.col("prc").abs() >= min_price) & (pl.col("mcap_musd") >= min_mcap)
+ )
 
 
 # ---------------------------------------------------------------------------
@@ -119,7 +123,7 @@ def signal(
    print(mom.head())
  """
  from optlab_research.signals.compute import compute_signal
- return compute_signal(name, as_of, con, n_quantiles=n_quantiles)
+ return compute_signal(name, as_of, con, universe=universe, n_quantiles=n_quantiles)
 
 
 # ---------------------------------------------------------------------------
@@ -153,7 +157,8 @@ def backtest(
   n_quantiles: Number of quantiles
   long_quantile: Quantile to go long (default: 5, highest signal)
   short_quantile: Quantile to go short (default: 1, lowest signal)
-  tcost_bps: Transaction cost assumption in basis points (default: 0)
+  tcost_bps: Positive values select the flat_bps cost model; zero disables costs.
+             This is a model assumption, not calibrated execution cost.
   options_data_provider: Optional callable for options-event studies.
                          Defaults to None so ordinary backtests never touch
                          ORATS credentials or external options data.
@@ -178,6 +183,7 @@ def backtest(
   n_quantiles=n_quantiles,
   long_quantile=long_quantile,
   short_quantile=short_quantile,
+  tcost_model="flat_bps" if tcost_bps > 0 else "none",
   tcost_bps=tcost_bps,
   options_data_provider=options_data_provider,
  )
@@ -220,26 +226,14 @@ def attribution(
  con=None,
  rolling_window: int = 36,
 ):
- """Run factor attribution on a backtest result.
+ """Reserved interface; factor attribution is not implemented in this checkout.
 
- Args:
-  backtest_result: BacktestResult from wb.backtest()
-  model: Attribution model ('capm', 'ff3', 'ff5', 'ff6', 'carhart4')
-  con: DuckDB connection (from wb.open())
-  rolling_window: Rolling beta window in months (default: 36)
-
- Returns:
-  Dict with keys: alpha, betas, t_stats, r_squared, rolling_betas
-
- Example:
-  with wb.open() as con:
-   bt   = wb.backtest("momentum_12_2", "2019-01-01", "2023-12-31", con=con)
-   attr = wb.attribution(bt, model="ff6", con=con)
-   print(f"Alpha: {attr['alpha']:.4f} (t={attr['t_stats']['alpha']:.2f})")
+ Always raises NotImplementedError. No factor models or estimated results
+ are advertised by list_attribution_models().
  """
- from optlab_research.attribution.factor import factor_attribution
- return factor_attribution(backtest_result, model=model, con=con,
-                          rolling_window=rolling_window)
+ raise NotImplementedError(
+  "Factor attribution is planned but not implemented in this repository."
+ )
 
 
 # ---------------------------------------------------------------------------
@@ -284,7 +278,7 @@ def list_signals() -> list[str]:
  """Return all available signal names from the registry."""
  from optlab_research.signals.registry import load_signals
  registry = load_signals()
- return list(registry.signals.keys())
+ return registry.names()
 
 
 def list_universes() -> list[str]:
@@ -294,4 +288,4 @@ def list_universes() -> list[str]:
 
 def list_attribution_models() -> list[str]:
  """Return all available attribution models."""
- return ["capm", "ff3", "ff5", "ff6", "carhart4"]
+ return []  # No attribution implementation is shipped yet.

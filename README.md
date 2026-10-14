@@ -1,209 +1,89 @@
-# optlab-research
+# Optlab Research
 
-**Systematic equity research workbench built on CRSP / Compustat / IBES.**
+**A Python, DuckDB and Polars workbench for systematic equity research.**
 
-A higher-level research layer on top of the [optlab](https://github.com/joshguti56/optlab) data lake that turns factor research from a 200-line notebook into 10 lines any analyst can write.
+Separate data access, signal definitions and portfolio evaluation so a research question can be traced from its inputs to its diagnostics. Developed for research workflows associated with Northeastern's 360 Huntington Fund and Options Club.
 
-```python
-from optlab_research import workbench as wb
+**Start here:** [signal registry](config/signals.yaml) | [universe SQL](optlab_research/universes/builder.py) | [backtest engine](optlab_research/backtest/engine.py) | [notebook guide](notebooks/README.md)
 
-with wb.open() as con:
-    univ = wb.universe("liquid_500", "2023-12-29", con=con)
-    mom  = wb.signal("momentum_12_2",  "2023-12-29", universe=univ, con=con)
-    bm   = wb.signal("book_to_market", "2023-12-29", universe=univ, con=con)
-```
+## What the repository demonstrates
 
----
+- **Research configuration:** ten registered signals and four universe presets, with Pydantic schema validation and reusable Python implementations for multi-step factors.
+- **SQL/data engineering:** DuckDB queries over an external Parquet-backed data lake; dated security identifiers, fundamentals-availability gates and explicit cross-sectional inputs.
+- **Portfolio evaluation:** monthly signal portfolios, weighting and transaction-cost modules, gross/net result objects, saved run manifests and HTML reporting.
+- **Options-data infrastructure:** IBKR snapshot collection, Parquet storage, scheduling and monitoring examples. These require a separately configured brokerage/data connection.
 
-## What this is
+This is a research workbench, not a production trading service or a claim of out-of-sample alpha.
 
-Most quant research codebases conflate data plumbing with research logic. This project separates them cleanly:
+## Inspect an actual artifact
 
-- **`optlab`** (separate repo) — the data lake. Pulls WRDS tables to Parquet, registers DuckDB views, handles incremental refreshes. You write it once and never touch it again.
-- **`optlab-research`** (this repo) — the research layer. Registry-driven signals, named universes, a backtester, performance attribution, and a live IBKR options data collector. Members write research, not infrastructure.
+![Archived signal rank-correlation matrix for the liquid_500 universe on 2023-12-29](notebooks/examples/cross_section_correlations.png)
 
-Built for the [360 Huntington Fund](https://www.northeastern.edu/360-huntington-fund/) at Northeastern University's D'Amore-McKim School of Business and the Northeastern Options Club.
+*Saved cross-sectional diagnostic: nine signals, one universe and one date. Correlation is not evidence of predictive performance. The [source notebook](notebooks/examples/cross_section_summary.ipynb) and [distribution chart](notebooks/examples/cross_section_histograms.png) provide context; these are archived outputs, not freshly rerun results.*
 
----
+## Current implementation, not a dated roadmap
 
-## Architecture
-
-```
-optlab data lake (CRSP / Compustat / IBES / OptionMetrics)
-    └── Parquet files on disk, DuckDB views on top
-            │
-            ▼
-optlab-research workbench
-    ├── Signal registry      config/signals.yaml   → 10 factors, YAML-defined
-    ├── Universe registry    config/universes.yaml  → 4 named presets
-    ├── Signal library       signals/library/       → complex multi-step signals
-    ├── Universe builder     universes/builder.py   → PIT-correct, DuckDB-backed
-    ├── Backtest engine      backtest/              → [Week 3, in progress]
-    ├── Attribution          attribution/           → [Week 6–7, in progress]
-    └── Member API           workbench/api.py       → wb.signal(), wb.universe()
-```
-
-**Key design decisions:**
-
-| Decision | Rationale |
-|---|---|
-| Registry-driven (YAML) | Adding a new factor is a one-line edit, not a code change |
-| PIT-correct by default | Every join respects `COALESCE(rdq, datadate + 90 days) <= asof` |
-| DuckDB views over Parquet | Lake is the source of truth; no data duplication |
-| Polars at the edges | Pandas only at the WRDS boundary; backtests run in Polars |
-| Pydantic + `extra="forbid"` | Schema violations fail loudly at load time, not silently at runtime |
-| Manifests for lineage | Every backtest run records inputs + git commit for reproducibility |
-
----
-
-## Signal library
-
-10 factors across 5 categories, all PIT-correct on CRSP / Compustat:
-
-| Signal | Category | Source | Sort | Literature |
-|---|---|---|---|---|
-| `book_to_market` | Value | Compustat | Q5 = long | Fama-French (1992) |
-| `gross_profitability` | Quality | Compustat | Q5 = long | Novy-Marx (2013) |
-| `roe` | Quality | Compustat | Q5 = long | Asness et al. (2019) |
-| `accruals` | Quality | Compustat | Q1 = long | Sloan (1996) |
-| `size` | Size | CRSP | Q1 = long | Fama-French (1992) |
-| `momentum_12_2` | Momentum | CRSP | Q5 = long | Jegadeesh-Titman (1993) |
-| `short_term_reversal` | Momentum | CRSP | Q1 = long | Jegadeesh (1990) |
-| `idio_vol_252d` | Risk | CRSP | Q1 = long | Ang et al. (2006) |
-| `beta_60m` | Risk | CRSP + FF | Q1 = long | Frazzini-Pedersen (2014) |
-| `asset_growth` | Investment | Compustat | Q1 = long | Cooper et al. (2008) |
-
-**Adding a new signal:**
-
-Simple signals (single formula over existing universe columns) are defined entirely in YAML:
-
-```yaml
-- name: earnings_yield
-  description: EBIT / Enterprise Value
-  kind: funda
-  formula: "pl.col('ebit') / (pl.col('mcap_musd') + pl.col('dltt') - pl.col('che'))"
-  required_columns: [ebit, mcap_musd, dltt, che]
-  source_table: comp_funda
-```
-
-Complex signals (rolling windows, regressions, multi-table joins) are Python files in `signals/library/` referenced from YAML via `library_fn`.
-
----
-
-## Named universes
-
-Four presets defined in `config/universes.yaml`:
-
-| Universe | Description | ~Size |
+| Area | Present in this checkout | Boundary |
 |---|---|---|
-| `russell3000` | Top 3000 US common stocks by market cap | ~3000 |
-| `russell1000` | Top 1000 US common stocks by market cap | ~1000 |
-| `liquid_500` | Top 500 by 3-month avg daily dollar volume | ~500 |
-| `tradeable` | Min price $5, min mcap $100M, no size cap | ~2000–2500 |
+| Signals | [Registry](optlab_research/signals/registry.py), [compute layer](optlab_research/signals/compute.py), [five library modules](optlab_research/signals/library/) | Data requirements differ by signal; a registry entry does not guarantee coverage. |
+| Universes | [Four presets](config/universes.yaml) and [builder](optlab_research/universes/builder.py) | `russell1000`/`russell3000` are size-ranked approximations, not licensed historical index membership. |
+| Backtests | [Engine](optlab_research/backtest/engine.py), [portfolio construction](optlab_research/backtest/portfolio.py), [cost-model research](optlab_research/backtest/tcost.py), [results](optlab_research/backtest/result.py) | Net aggregation supports no costs or flat costs. Spread/impact proxies are uncalibrated and explicitly blocked in backtest runs pending reconciliation. |
+| Reporting | [HTML report generator](optlab_research/reporting/report.py) and [example](notebooks/examples/08_report_generation.ipynb) | Not a hosted dashboard or an independently validated performance record. |
+| IBKR | [Collector/storage/scheduler](optlab_research/ibkr/) and [configuration](config/ibkr.yaml) | External session, permissions and market-data subscriptions required. |
+| Planned / not implemented | Factor attribution and the ORATS endpoint | These entry points explicitly raise `NotImplementedError`; no attribution or provider result is claimed. |
 
-All universes apply standard CRSP filters (shrcd ∈ {10,11}, exchcd ∈ {1,2,3}) and exclude delisted names. Fundamentals are attached via CCM link with full PIT gating.
+## Quick start: inspect and test without market-data credentials
 
----
-
-## Cross-section validation (2023-12-29, `liquid_500`)
-
-All 9 available signals show ≥99% coverage and monotone quintile sorts:
-
-```
-signal               total    non_null    coverage    median
-book_to_market         500         498       99.6%     0.198
-gross_profitability    500         498       99.6%     0.255
-roe                    500         498       99.6%     0.155
-accruals               500         498       99.6%    -0.033
-size                   500         500      100.0%    10.392
-momentum_12_2          498         498      100.0%     0.088
-short_term_reversal    500         499       99.8%     0.101
-beta_60m               500         490       98.0%      1.02
-asset_growth           498         491       98.6%     0.089
-```
-
----
-
-## Stack
-
-- **Python 3.11+**, Anaconda
-- **DuckDB** — SQL engine over Parquet views
-- **Polars** — backtests and signal computation
-- **Pydantic v2** — config schema validation
-- **CVXPY + Ledoit-Wolf** — portfolio optimization (Week 5+)
-- **WRDS** — data source (CRSP, Compustat, IBES, Fama-French)
-- **ib_async** — IBKR live options chain snapshotting (Week 10+)
-
----
-
-## Project roadmap
-
-This is a 12-week build. Current status: **Week 2 of 12 complete.**
-
-- [x] **Week 1** — Signal registry foundation (`SignalSpec`, `compute_signal`, 5 signals)
-- [x] **Week 2** — Signal library expansion (10 signals), named universe presets, workbench API
-- [ ] **Week 3** — Backtest engine v0 (quintile long-short, `BacktestResult`, manifests)
-- [ ] **Week 4** — Replication: Jegadeesh-Titman momentum, low-vol anomaly, quality factor
-- [ ] **Week 5** — Transaction costs, value/rank/IC weighting schemes
-- [ ] **Week 6** — FF6 factor attribution (Newey-West HAC, rolling exposures)
-- [ ] **Week 7** — Brinson-Fachler sector attribution
-- [ ] **Week 8** — PDF/HTML report generation
-- [ ] **Week 9** — Member API + research project template notebook
-- [ ] **Week 10** — IBKR connection + options chain snapshotting
-- [ ] **Week 11** — Scheduled snapshots + monitoring dashboard
-- [ ] **Week 12** — Streamlit dashboard + full demo
-
----
-
-## Repository structure
-
-```
-optlab-research/
-├── config/
-│   ├── signals.yaml          # Signal/factor registry (10 factors)
-│   ├── universes.yaml        # Named universe presets
-│   ├── attribution.yaml      # Attribution model definitions [Week 6]
-│   └── ibkr.yaml             # IBKR snapshot schedule [Week 10]
-├── optlab_research/
-│   ├── signals/
-│   │   ├── registry.py       # SignalSpec, SignalRegistry, load_signals()
-│   │   ├── compute.py        # compute_signal(name, date, con, universe)
-│   │   └── library/          # Complex multi-step signals
-│   │       ├── momentum.py
-│   │       ├── idio_vol.py
-│   │       ├── short_term_reversal.py
-│   │       ├── beta_60m.py
-│   │       └── asset_growth.py
-│   ├── universes/
-│   │   └── builder.py        # get_universe(name, date, con)
-│   ├── backtest/             # [Week 3]
-│   ├── attribution/          # [Week 6–7]
-│   ├── ibkr/                 # [Week 10]
-│   ├── workbench/
-│   │   └── api.py            # wb.signal(), wb.universe(), wb.open()
-│   └── db.py                 # DuckDB connection management
-├── notebooks/
-│   └── examples/
-│       └── cross_section_summary.ipynb
-└── tests/
-    ├── test_signals.py
-    └── test_universes.py
-```
-
----
-
-## Setup
+Use **Python 3.11+** and run from the repository root. The nested `optlab-research/` directory is an older copy, not the installation target.
 
 ```bash
-git clone https://github.com/joshguti56/optlab-research
-cd optlab-research
-pip install -e ".[dev]"
+git clone https://github.com/JoshGutierrez56/Optlab-Research.git
+cd Optlab-Research
+python -m pip install -e ".[dev]"
+python -c "from optlab_research.signals.registry import load_signals; print(load_signals().names())"
+python -m pytest tests -q
 ```
 
-Requires a working `optlab` installation with WRDS credentials and refreshed tables (`crsp_msf`, `comp_funda`, `crsp_stocknames`, `crsp_msedelist`, `crsp_ccmxpf_linktable`, `ff_factors_monthly`).
+The tests use synthetic fixtures; no WRDS account, broker login or data download is needed. A passing fixture test is not a validation of every real-data path.
 
----
+### With your own prepared data lake
 
-## License
+The external `optlab` package must be installed separately and provide `config/tables.yaml`, `data/` and `db/research.duckdb`. Licensed CRSP/Compustat data and an operational data lake are **not** supplied by this checkout; the root `optlab.db` is not a ready-to-query research dataset.
 
-MIT
+Use the implemented lower-level interfaces explicitly:
+
+```python
+from optlab_research import open_connection
+from optlab_research.universes.builder import get_universe
+from optlab_research.signals.compute import compute_signal
+
+with open_connection(optlab_root="/path/to/your/optlab") as con:
+    universe = get_universe("liquid_500", "2023-12-29", con)
+    momentum = compute_signal(
+        "momentum_12_2", "2023-12-29", con, universe=universe
+    )
+    print(momentum.head())
+```
+
+The universe builder expects CRSP prices and security-name histories, delisting dates, dated CCM links and Compustat fundamentals. Beta and idiosyncratic-volatility signals additionally need the relevant Fama-French tables. Inspect each [signal definition](config/signals.yaml) before running it.
+
+## Data and interpretation limits
+
+- **Availability is not vintage reconstruction.** The universe SQL gates fundamentals using `COALESCE(rdq, datadate + 90 days) <= asof`. This is an availability convention, not proof that restated values, identifier mappings and every downstream join reproduce the information available historically. Supplied universe frames remain the caller's responsibility.
+- **Grain and coverage matter.** Check one security per cross-section, identifier-link validity, stale prices and missing/delisting returns. `liquid_500` currently ranks monthly-dollar-volume inputs; it is not a daily-liquidity execution model.
+- **Bounded API verification.** The public workbench preserves a supplied signal universe and applies additional price/capitalization screens after the named universe preset. Synthetic regression checks cover those paths; they do not certify every external data-lake integration.
+- **Costs are explicit assumptions.** Positive `wb.backtest(..., tcost_bps=...)` selects flat costs per unit of absolute traded portfolio weight; zero disables costs. Long and short charges both reduce portfolio returns once, including position reductions and exits. The model compares consecutive target weights, not drifting share holdings, and charges entry and exit separately. Hand-calculated fixtures check the arithmetic; spread/impact proxies are not enabled for backtests. Saved notebook net results predate this correction and have not been rerun.
+- **Results are specification-dependent.** Within each leg, the backtest drops missing forward returns and renormalizes surviving holdings. Dates with no observed returns are retained with null returns; if only one leg has returns, `ls_ret` uses that available leg. Its reported `sharpe_ls` uses geometric annualized return divided by annualized volatility, not the conventional arithmetic excess-return Sharpe. Review the [implementation](optlab_research/backtest/result.py) before comparison with another system.
+- **Scope still to complete:** attribution, provider integration and end-to-end real-data validation. The [June audit](AUDIT.md) is historical context, not a current completion certificate.
+
+## Repository map
+
+| Path | Purpose |
+|---|---|
+| [`config/`](config/) | Signal, universe and IBKR configuration |
+| [`optlab_research/`](optlab_research/) | Current package: SQL access, factors, portfolios, reporting and collectors |
+| [`notebooks/`](notebooks/) | Research examples, replication studies and saved diagnostics |
+| [`tests/`](tests/) | Synthetic signal and portfolio checks |
+| [`scripts/`](scripts/) | Snapshot collection entry points |
+
+The strongest contribution here is the separation of research logic from data plumbing, with assumptions exposed for inspection and extension.

@@ -18,6 +18,7 @@ dependencies = [
     "statsmodels>=0.14",
     "plotly>=5.20",
     "numpy>=1.26",
+    "pandas>=2.0",
 ]
 
 [project.optional-dependencies]

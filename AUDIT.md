@@ -1,5 +1,7 @@
 # Audit Report
 
+> Historical record from June 14, 2026. File availability and implementation status have changed since this audit; consult the [current README](README.md) and source for today's scope. The figures and pass/fix labels below are not a new verification of the current checkout.
+
 **Date:** 2026-06-14  
 **Auditor:** Merlin (OpenClaw agent)  
 **Scope:** `optlab-research` notebook infrastructure, signal library, data lake connectivity

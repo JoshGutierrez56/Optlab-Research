@@ -1,46 +1,39 @@
-# Notebook Replications & Portfolio Analysis
+# Research notebook guide
 
-Factor replication notebooks that reproduce published academic results using the optlab data lake (CRSP / Compustat / IBES via DuckDB). Each notebook is self-contained: load data → compute signal → run backtest → produce diagnostics.
+These notebooks explore factor construction, portfolio evaluation and options-data workflows using the external `optlab` data lake. Saved outputs are historical artifacts, not fresh reproductions or proof of statistically significant alpha.
 
----
+Read the [root README](../README.md) for current setup, implementation status and data limitations. Some notebooks retain local data paths or older API assumptions; inspect their configuration before execution.
 
-## Factor Replications
+## Start with a cross-section
 
-### 01_momentum_replication.ipynb
-**Factor:** Jegadeesh & Titman (1993) Momentum  
-**Literature:** Jegadeesh & Titman (1993, JF) — Returns to Buying Winners and Selling Losers; Asness & Moskowitz (2004) — Momentum and Value.  
-**Key Finding:** Momentum long-short Sharpe of **0.262**, annualized return **5.12%**, maximum drawdown **-28.43%** over the sample period. Consistent with the momentum anomaly: 12-2 month returns show significant cross-sectional dispersion. Quintile spread diagnostics confirm monotonicity across deciles. Seasonality analysis reveals the January effect is concentrated in losers (not winners), consistent with post-earnachment drift patterns.  
-**Data Requirements:** `crsp_dsf` (daily stock file, 1986–2023), `crsp_msf` (monthly stock file), `crsp_stocknames` for delisting adjustments. Requires at least 6 months of trailing returns for momentum computation.
+- [Signal coverage, distributions and correlations](examples/cross_section_summary.ipynb)
+- [Saved correlation matrix](examples/cross_section_correlations.png)
+- [Saved signal distributions](examples/cross_section_histograms.png)
 
-### 02_low_vol_anomaly.ipynb
-**Factor:** Low Volatility / Beta Anomaly  
-**Literature:** Fama & French (2006, JFE) — The Cross-Section of Expected Stock Returns; Frazzini & Pedersen (2014, JF) — Betting Against Beta.  
-**Key Finding:** Low volatility (idio_vol_252d) **not implemented** due to idiovol signal infrastructure gap. BAB variant (`beta_60m`) returned Sharpe **-0.371**, annualized return **-6.60%**, maximum drawdown **-48.75%** over 59 months (2019–2023). The negative BAB result in-sample contrasts with the theoretical prediction but is consistent with recent literature noting the anomaly's fragility post-2008 and during low-rate environments. Average monthly turnover: 27.71%.  
-**Data Requirements:** `crsp_dsf` (for daily idiosyncratic volatility), `crsp_msf` (for beta computation), `ff_factors_monthly` (market factor for beta estimation). Requires `idio_vol` signal from `optlab_research.signals.library.idio_vol`.
+These artifacts describe a cross-section on 2023-12-29. Sorted signal values and cross-sectional correlation are not forward-return validation.
 
-### 03_quality_factor.ipynb
-**Factor:** Quality (Gross Profitability + ROE)  
-**Literature:** Novy-Marx (2013, JFE) — The Other Side of Momentum; Fama & French (2015, JFE) — A Five-Factor Asset Pricing Model.  
-**Key Finding:** Gross profitability (GP) long-short Sharpe **0.443**, ROE long-short Sharpe **0.441**. Both quality signals produce economically and statistically significant excess returns consistent with the literature. GP-Value correlation rho = **-0.257**, indicating substantial overlap but distinct information content (quality captures both profitability and growth). The financial sector null-rate check passes — no systematic data gaps in the financials universe during the sample period.  
-**Data Requirements:** `comp_funda` (Compustat fundamentals for GP, ROE), `crsp_msf` (for returns), `crsp_ccmxpf_linktable` + `optcrsp_link` (for CRSP-Compustat linkages). Requires gross profitability definition per Novy-Marx (sale - COGS)/total assets).
+## Factor studies
 
----
+| Notebook | Research question |
+|---|---|
+| [Momentum](factor%20replications/01_momentum_replication.ipynb) | How does a trailing-return sort behave under this universe, sample and portfolio specification? |
+| [Low volatility / beta](factor%20replications/02_low_vol_anomaly.ipynb) | How sensitive are defensive-factor conclusions to the signal and available data? |
+| [Quality](factor%20replications/03_quality_factor.ipynb) | What do profitability and ROE sorts add, and where are their data gaps? |
+| [Momentum transaction costs](portfolio%20analysis/01_momentum_tcost_sensitivity.ipynb) | How do turnover and assumed trading costs affect gross versus net results? |
 
-## Portfolio Analysis
+The current package includes an [idiosyncratic-volatility implementation](../optlab_research/signals/library/idio_vol.py); older notebook notes about its absence describe earlier runs, not the current source. Its use still requires daily CRSP and Fama-French inputs.
 
-### 01_momentum_tcost_sensitivity.ipynb
-**Factor:** Transaction Cost Sensitivity (momentum as test case)  
-**Literature:** Geczy & Samonov (2015, JFE) — Costs of Active Management; Berk & van Binsbergen (2015) — Measuring Skill in the Factor Space.  
-**Status:** NOT YET RUN — awaits execution in next session.  
-**Data Requirements:** `crsp_dsf` (for returns), portfolio optimization weights, transaction cost model parameters (`TcostModel`, `TcostConfig`).
+The workbench now forwards supplied signal universes and activates its flat-cost model for positive `tcost_bps`. Flat costs debit both long and short returns once, including reductions and exits, using consecutive target weights. Saved notebook net results predate this accounting correction and have not been recomputed; do not treat them as current validated results. Spread/impact backtests are explicitly blocked pending reconciliation. Factor attribution remains unimplemented; a notebook reference to it is not an available result.
 
----
+## Reporting and data collection
 
-## Summary Table
+- [HTML report generation](examples/08_report_generation.ipynb)
+- [IBKR options snapshot](examples/10_ibkr_snapshot.ipynb)
+- [Snapshot monitoring](examples/11_snapshot_monitoring.ipynb)
+- [Research project template](templates/research_project_template.ipynb)
 
-| Notebook | Factor / Topic | Status | Key Metric | Value |
-|----------|---------------|--------|-----------|-------|
-| 01_momentum_replication | Momentum (Jegadeesh-Titman) | ✅ PASS | Sharpe | 0.262 |
-| 02_low_vol_anomaly | Low Vol / BAB (Frazzini-Pedersen) | ✅ PASS | Ann Return | -6.60% |
-| 03_quality_factor | Quality (GP + ROE, Novy-Marx/FF) | ✅ PASS | GP Sharpe | 0.443 |
-| 01_momentum_tcost_sensitivity | T-cost sensitivity | ⏳ PENDING | — | — |
+Broker examples require a separately configured session and market-data access. Research notebooks require appropriately licensed datasets; the repository does not supply a complete research database.
+
+## Before interpreting a result
+
+Record the data snapshot, sample, universe construction, signal timing, missing-return treatment, transaction costs and metric definitions. Validate temporal availability and benchmark comparability, and distinguish descriptive diagnostics from a held-out test. The historical [audit](../AUDIT.md) is a dated troubleshooting record, not a blanket test-pass label.

@@ -13,13 +13,19 @@ Quick start
         univ = wb.universe("liquid_500", "2023-12-29", con=con)
         bm   = wb.signal("book_to_market", "2023-12-29", universe=univ, con=con)
 
-    # Or let the workbench manage the connection internally (one call = one connection)
-    bm = wb.signal("book_to_market", "2023-12-29", universe="liquid_500")
+    # Inspect available definitions without opening a data connection.
+    names = wb.list_signals()
 
 See optlab_research.workbench.api for full documentation.
 """
 from __future__ import annotations
 
-from optlab_research.workbench.api import open, signal, universe
+from optlab_research.workbench.api import (
+    open, signal, universe, backtest, report, list_signals, list_universes,
+    attribution, list_attribution_models,
+)
 
-__all__ = ["open", "signal", "universe"]
+__all__ = [
+    "open", "signal", "universe", "backtest", "report", "list_signals",
+    "list_universes", "attribution", "list_attribution_models",
+]

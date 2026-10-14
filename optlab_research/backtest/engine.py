@@ -63,15 +63,13 @@ Forward return join strategy
     stock per period.
 
 Transaction costs (Week 5)
-    If tcost_model is not "none", costs are computed BEFORE portfolio return
-    aggregation using compute_tcost(). The net_forward_ret = forward_ret - tcost
-    column is passed to compute_portfolio_returns so that BacktestResult contains
-    both gross and net return series.
-
-    Cost is only incurred on the TRADED portion of each position (|Δw| vs prior
-    period), not on the full position size. This requires passing prev_weights
-    to compute_tcost(), which the engine handles by tracking the prior period's
-    weight DataFrame in the main loop.
+    Supported backtest models are "none" and "flat_bps". The flat rate is
+    charged per unit of absolute change in portfolio weight, including exits.
+    Long and short costs both debit portfolio P&L once AFTER gross return
+    aggregation; they are not signed asset returns and are not weighted twice.
+    Unchanged weights incur no cost. This uses previous target weights, not
+    marked-to-market drifting positions, and is not executable cash accounting.
+    Spread/impact proxy aggregation is explicitly unsupported pending review.
 
 Value weighting (Week 5)
     If weighting="value", the universe DataFrame must contain mcap_musd. The
@@ -119,7 +117,7 @@ from optlab_research.backtest.portfolio import (
     compute_turnover,
 )
 from optlab_research.backtest.result import BacktestResult
-from optlab_research.backtest.tcost import TcostConfig, TcostModel, compute_tcost
+from optlab_research.backtest.tcost import TcostConfig, TcostModel
 from optlab_research.logging_setup import get_logger
 
 log = get_logger(__name__)
@@ -189,8 +187,9 @@ class BacktestConfig(BaseModel):
     Default "none" preserves v0 behavior (no t-costs)."""
 
     tcost_bps: float = Field(default=0.0, ge=0.0, le=500.0)
-    """Round-trip cost in basis points. Used by "flat_bps" model and as
-    fallback for "half_spread" / "sqrt_adv" when required data is absent."""
+    """Flat cost in basis points per unit of absolute traded portfolio weight.
+    Entry and exit are charged separately. This is an assumption, not observed
+    execution cost; spread/impact backtest aggregation is not yet supported."""
 
     tcost_adv_fraction: float = Field(default=0.01, gt=0.0, le=1.0)
     """Fraction of ADV assumed traded. Used by "sqrt_adv" model only."""
@@ -282,6 +281,11 @@ class Backtest:
         """
         cfg = self.config
         tcost_cfg = cfg.tcost_config
+        if tcost_cfg.model not in (TcostModel.none, TcostModel.flat_bps):
+            raise NotImplementedError(
+                "Backtest net returns currently support only 'none' and 'flat_bps'. "
+                "Spread/impact proxies need independent cost-unit and exit reconciliation."
+            )
         log.info(
             "Backtest.run() | signal=%s  universe=%s  %s → %s  portfolio=%s(%s)  tcost=%s@%.1fbps",
             cfg.signal, cfg.universe, cfg.start, cfg.end,
@@ -350,7 +354,7 @@ class Backtest:
 
         # ── Steps 6/7: weights, tcosts, portfolio returns ─────────────────────
         all_weights: list[pl.DataFrame] = []
-        all_weighted_with_costs: list[pl.DataFrame] = []
+        period_costs: list[dict] = []
         prev_weights_df: pl.DataFrame | None = None
 
         for sig_date in signal_dates:
@@ -381,27 +385,17 @@ class Backtest:
             )
             all_weights.append(weighted)
 
-            # [Week 5] Compute t-costs on the weighted holdings.
-            if tcost_cfg.model != TcostModel.none:
-                weighted_with_costs = compute_tcost(
-                    weighted,
-                    cfg=tcost_cfg,
-                    prev_weights=prev_weights_df,
-                )
-                # Check if sqrt_adv fell back to flat (dvol missing).
-                if "_tcost_fallback_to_flat" in weighted_with_costs.columns:
-                    log.warning(
-                        "date=%s: sqrt_adv model fell back to flat_bps (dvol missing).",
-                        sig_date,
-                    )
-                    weighted_with_costs = weighted_with_costs.drop("_tcost_fallback_to_flat")
-            else:
-                # No tcost model — add zero column for consistent schema.
-                weighted_with_costs = weighted.with_columns(
-                    pl.lit(0.0).alias("tcost")
-                )
-
-            all_weighted_with_costs.append(weighted_with_costs)
+            # Costs are portfolio-return fractions, not asset returns. Debit
+            # them once after gross aggregation, including full position exits.
+            long_cost, short_cost = _flat_costs_by_leg(
+                weighted, prev_weights_df,
+                tcost_cfg.flat_fraction if tcost_cfg.model == TcostModel.flat_bps else 0.0,
+            )
+            period_costs.append({
+                "date": return_date_map[sig_date],
+                "long_cost": long_cost,
+                "short_cost": short_cost,
+            })
             # Track this period's weights for next period's Δw computation.
             prev_weights_df = weighted.select(["permno", "weight"])
 
@@ -412,7 +406,7 @@ class Backtest:
             )
 
         # Stack all periods into a single holdings DataFrame.
-        holdings = pl.concat(all_weighted_with_costs, how="diagonal")
+        holdings = pl.concat(all_weights, how="diagonal")
 
         # Remap as_of_date → return_date before aggregating (so output date
         # reflects when the return was EARNED, not when the signal was formed).
@@ -420,29 +414,21 @@ class Backtest:
             pl.col("return_date").alias("as_of_date")
         )
 
-        # [Week 5] Attach net_forward_ret = forward_ret - tcost.
-        # Both gross and net go into BacktestResult.
-        holdings_for_agg = holdings_for_agg.with_columns(
-            (pl.col("forward_ret") - pl.col("tcost")).alias("net_forward_ret")
-        )
-
         # ── Step 8: aggregate to portfolio returns (gross and net) ────────────
-        gross_returns_df = compute_portfolio_returns(
-            holdings_for_agg.rename({"forward_ret": "forward_ret"})
-        )
-        net_returns_df = compute_portfolio_returns(
-            holdings_for_agg
-            .with_columns(pl.col("net_forward_ret").alias("forward_ret"))
-        )
-        # Rename net columns to avoid collision.
-        net_returns_df = net_returns_df.rename({
-            "long_ret":  "net_long_ret",
-            "short_ret": "net_short_ret",
-            "ls_ret":    "net_ls_ret",
-        })
-
-        # Join gross and net into one returns DataFrame for BacktestResult.
-        returns_df = gross_returns_df.join(net_returns_df, on="date", how="left")
+        gross_returns_df = compute_portfolio_returns(holdings_for_agg)
+        returns_df = gross_returns_df.join(pl.DataFrame(period_costs), on="date", how="left")
+        for leg in ("long", "short"):
+            gross, cost = pl.col(f"{leg}_ret"), pl.col(f"{leg}_cost")
+            returns_df = returns_df.with_columns(
+                pl.when(gross.is_not_null() | ((cost > 0) & pl.col("ls_ret").is_not_null()))
+                .then(gross.fill_null(0.0) - cost)
+                .otherwise(pl.lit(None).cast(pl.Float64))
+                .alias(f"net_{leg}_ret")
+            )
+        returns_df = returns_df.with_columns(
+            (pl.col("ls_ret") - pl.col("long_cost") - pl.col("short_cost"))
+            .alias("net_ls_ret")
+        ).drop("long_cost", "short_cost")
 
         # ── Step 9: turnover and holdings summary ─────────────────────────────
         monthly_turnover = _compute_monthly_turnover(all_weights, signal_dates)
@@ -475,6 +461,36 @@ class Backtest:
 
 
 # ─── Private helpers ─────────────────────────────────────────────────────────
+
+
+def _flat_costs_by_leg(
+    current: pl.DataFrame,
+    previous: pl.DataFrame | None,
+    rate: float,
+) -> tuple[float, float]:
+    """Cost per unit of absolute traded weight, split by exposure leg.
+
+    A full join retains exits. Long and short exposure changes are measured
+    separately so crossing zero pays to close one leg and open the other.
+    These costs are already portfolio-return fractions; do not weight again.
+    """
+    weights = current.select("permno", "weight")
+    if previous is None:
+        weights = weights.with_columns(pl.lit(0.0).alias("previous_weight"))
+    else:
+        weights = weights.join(
+            previous.select("permno", pl.col("weight").alias("previous_weight")),
+            on="permno", how="full",
+        ).with_columns(pl.col("weight", "previous_weight").fill_null(0.0))
+    long_traded = (
+        weights["weight"].clip(lower_bound=0.0)
+        - weights["previous_weight"].clip(lower_bound=0.0)
+    ).abs().sum()
+    short_traded = (
+        (-weights["weight"]).clip(lower_bound=0.0)
+        - (-weights["previous_weight"]).clip(lower_bound=0.0)
+    ).abs().sum()
+    return float(long_traded * rate), float(short_traded * rate)
 
 
 def _get_rebalance_dates(

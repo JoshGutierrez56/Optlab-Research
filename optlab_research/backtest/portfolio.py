@@ -326,17 +326,15 @@ def compute_portfolio_returns(holdings: pl.DataFrame) -> pl.DataFrame:
       Remaining weights are renormalized so they still sum to ±1.
     * If an entire leg is null for a period, that leg's return is null.
     * ``ls_ret`` is null only if *both* legs are null.
+    * Every input date is retained, including periods with no observed returns.
     """
+    dates = holdings.select(pl.col("as_of_date").alias("date")).unique().sort("date")
     valid = holdings.filter(pl.col("forward_ret").is_not_null())
 
     if valid.height == 0:
-        return pl.DataFrame(
-            schema={
-                "date": pl.Date,
-                "long_ret": pl.Float64,
-                "short_ret": pl.Float64,
-                "ls_ret": pl.Float64,
-            }
+        return dates.with_columns(
+            pl.lit(None).cast(pl.Float64).alias(col)
+            for col in ("long_ret", "short_ret", "ls_ret")
         )
 
     # Renormalize |weights| to 1.0 per (date, leg) after null-return drop.
@@ -386,7 +384,11 @@ def compute_portfolio_returns(holdings: pl.DataFrame) -> pl.DataFrame:
         .alias("ls_ret")
     )
 
-    return wide.select(["date", "long_ret", "short_ret", "ls_ret"])
+    return dates.join(
+        wide.select(["date", "long_ret", "short_ret", "ls_ret"]),
+        on="date",
+        how="left",
+    ).sort("date")
 
 
 # ─── Turnover ─────────────────────────────────────────────────────────────────
